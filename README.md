@@ -1,6 +1,8 @@
-# wxl-equip-extension-csv
+# wxl-equip-creature-extension-csv-WXL11
 
-A [WarcraftXL](https://github.com/WarcraftXL/WarcraftXL) module that dramatically expands what `ItemDisplayInfo.dbc` can do. It extends M2 model attachment support to every equippable slot, adds a second model channel to all slots, and introduces collection M2 support with per-geoset filtering — all driven entirely by DBC data, with no client code changes per item.
+A [WarcraftXL](https://github.com/WarcraftXL/WarcraftXL) module that dramatically expands what `ItemDisplayInfo.dbc` and `CreatureDisplayInfo.dbc` can do. It extends M2 model attachment support to almost equippable slot (excluded tabard, rings, amulet and trinket), adds extra model channels to supported slots, and introduces collection M2 support with per-geoset filtering — all driven entirely by DBC data, with no client code changes per item.
+Allows to use and geoset filter creature models that have more than the 3 usual testures choices in the .dbc through the .csv sidecar.
+Allows for weapons to have custom offhand models (useful for asymmetric weapon models).
 Uses .csv sidecars to declare the extra textures newer models have.
 ---
 
@@ -11,33 +13,30 @@ Since the original equip extensions at the time was not working for weapons and 
 Since I was at it, creatures support was added.
 
 This is mainly aimed at people who want to implement custom models in an easy way. 
-If you are interested only in running the retail stuff in your client, then the base module or the db2 module are the better choice.
 
-Needless to say, this is NOT compatible with withe either the base module or the DB2 one, so you have to choose which one to build your WarcraftXL with.
+This ahs been ported to the WarcraftXL 1.1 core and slightly expanded upon from 
 
 ---
 
 ## Requirements
-- **WarcraftXL** installed in the WoW 3.3.5a client directory (`d3d9.dll` proxy + `WarcraftXL.dll`).
-- This module is compiled into `WarcraftXL.dll` automatically — no separate DLL, no additional files needed at runtime.
-- If possible, also use the Host extension.
+- **WarcraftXL core 1.1** installed in the WoW 3.3.5a client directory.
 
 - Take the WXLExtendedEquipment.ini from the samples and instructions folder and put it into the root of the client.
-You may now select the size of the creatures models cache and disable eager loading for creatures and weapons.
-
-**NOTE: this specific module uses an event implemented in this branch of the WXL-Core, (has ben pulled into the main branch, so you might not need it anymore).**
-https://github.com/Atraxian123/wxl-core
-**This fork of the modern assets module that solves an issue with WEAPON_BLADE textures on non weapon items**
-https://github.com/Atraxian123/wxl-modern-assets
+You may now select the size of the creatures models cache. Eager loading has been disabled by code, so the settings for eager loading in the .ini are leftovers.
 
 ---
 ## Credits
+
+https://github.com/iThorgrim
+For the whole Warcraft XL project
 
 https://github.com/Morfium-G
 For the original wxl-equipextension module
 
 https://github.com/Furioz420
 For the original .csv implementation
+
+
 
 ---
 
@@ -49,8 +48,6 @@ This module is auto-globbed by the WarcraftXL CMake build. To include it, clone 
 $env:PATH = "C:\path\to\cmake\bin;$env:PATH"
 .\build.ps1
 ```
-
-Deploy the resulting `WarcraftXL.dll` and `d3d9.dll` into your WoW client directory as usual.
 
 ---
 
@@ -126,6 +123,8 @@ Sidecars are searched in:
 - `DBFilesClient\WXLWeaponModels.csv`
 - `WXLWeaponTextures.csv`
 - `DBFilesClient\WXLWeaponTextures.csv`
+- `WXLHelmOffsets.csv`
+- `DBFilesClient\WXLHelmOffsets.csv`
 
 - the same `DBFilesClient\...` paths inside every `Data\*.MPQ` patch, including open-folder `.MPQ` patches
 
@@ -140,15 +139,18 @@ Common columns:
 | Column | Meaning |
 |--------|---------|
 | `DisplayID` | ItemDisplayInfo ID. Required. |
+| `ItemID` | ID of the item. Leave empty. (candidate for removal) |
 | `Slot` | Slot name or internal model slot index. Examples: `Head`, `Shoulder`, `Chest`, `Glove`, `8`. |
+| `Layer` | Layer of the baked model. Keep Base for now (possible candidate for removal) |
+| `Side` | Side from where the model should appear: L, R or C (possible candidate for removal) |
+| `Folder` | Optional object component folder override, e.g. `Head`, `Shoulder`, `Collections`. |
 | `Model` / `ModelStem` / `ModelName` | Model stem or path. Required. May include `:geosets`. |
 | `Texture` / `TextureStem` / `ModelTexture` | Optional model texture stem. |
-| `Folder` | Optional object component folder override, e.g. `Head`, `Shoulder`, `Collections`. |
 | `Geosets` | Optional comma-separated geoset filter. Overrides any `:geosets` suffix in `Model`. |
 | `Attach` | Optional explicit attachment ID. |
 | `SuffixPolicy` | `Exact`/`None`, `Retail`/`New`, `Legacy`/`Race`, or `DBC`/`Slot`. |
 | `TexturePolicy` | Same idea as `SuffixPolicy`, but for texture suffixing. |
-| `Flags` | Extra Icon2-style model flags ORed into the row. |
+| `Flags` | Extra Icon2-style model flags. |
 
 ### `WXLItemDisplayModelMaterials.csv`
 
@@ -169,15 +171,53 @@ Common columns:
 
 Targeted material rows are applied to virtual collection models instead of globally replacing the model's main texture.
 
-### `WXLItemEntryDisplay.csv`
+### `WXLHelmOffsets.csv`
 
-Sidecar used to declare weapon item IDs and their Display IDs, it was necessary since weapons behave a little differently from armor pieces in the client.
+Applies model-specific material offsets for Helm models and other collections models.
 
 | Column | Meaning |
 |--------|---------|
-| `ItemID` | Item Id matching the entry in the .dbc |
-| `DisplayID` | Item Display Id matching the entry in the .dbc |
-| `Folder` | Folder where the model is, either Weapon, Shield or Collections in rare cases when someone put fist weapons there in the listfile |
+| `Model` | Name of the model where to apply the modifications. |
+| `RaceSex` | Additional filter for specific race/sex combinations for the modifications. |
+| `Mode` | Mode of the modifications: can be Add, None or others (see the code) |
+| `Kind` | Kind of model to modify, generally reserved to Helm or Collection. |
+| `X Y Z` | Offsets to add ot the model. |
+| `Scale` | Scale multiplier for the model (generally not used, but for some collections Tauren Females need 0.8 and Tauren Males need 0.75. |
+
+This CSV is used to apply scale and offset modifications to helm models and to collection models.
+The Extension will apply the helm offset corrections if the root of the helm model is specified in this .CSV
+
+### `WXLWeaponModels.csv`
+
+Sidecar used to declare weapon models to bake and their geosets
+
+| Column | Meaning |
+|--------|---------|
+| `DisplayID` | item display ID entry as in the ItemDisplayInfo.dbc |
+| `ModelPath` | full path of the model to use for pre-loading ending with the .mdx extension |
+| `Model2Path` | full path of the model to use for pre-loading ending with the .mdx extension |
+| `Geoset1` | geosets of the model 1 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets |
+| `Geoset1` | geosets of the model 2 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets |
+| `Model1OffhandPath` | full path of the model to use for pre-loading ending with the .mdx extension for custom offhand model (optional)|
+| `Model2OffhandPath` | full path of the model to use for pre-loading ending with the .mdx extension for custom offhand model (optional)|
+| `Geoset1Offhand` | geosets of the model 1 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets for custom offhand model (optional)|
+| `Geoset1Offhand` | geosets of the model 2 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets for custom offhand model (optional)|
+| `NoAutoMirrot` | Opt out of the auto mirror for offhand models (NOT YET IMPLEMENTED) |
+
+Generally weapons only have 1 model and only skin geosets, but I wanted to give the option to modders to make complex weapons if they wanted.
+Also added support for custom models for the offhand version of the weapon. Yf you want a mirrored model of, let's say, a glaive weapon you will have to add it to the offhand model and provide the model yourself (mainly through WoW Blender Studio import and modifications)
+An auto-mirroring feature is in the works and not yet implemented.
+
+### `WXLWeaponTextures.csv`
+
+Sidecar for declaring the textures to bake into the weapons
+
+| Column | Meaning |
+|--------|---------|
+| `DisplayID` | item display ID entry as in the ItemDisplayInfo.dbc |
+| `ModelColumn` | 0 or 1 depending if the textures must be baked on the first or second model declared in the previous .csv |
+| `TextureType` | Texture Type of the texture to be baked. See tables below for reference. |
+| `TexturePath` | full path of the texture file to be baked |
 
 ### `WXLCreatureModels.csv`
 
@@ -212,35 +252,6 @@ For example: creature\manawyrm2mount\manawyrm2mount.mdx with display ID 33113 wi
 Otherwise the new virtual model will be pre-loaded, but never used by the client.
 
 The corresponding CreatureDisplayInfo.dbc etry will have to specify the correct model id from the CreatureModelData.dbc.
-
-### `WXLWeaponModels.csv`
-
-Sidecar used to declare weapon models to bake and their geosets
-
-| Column | Meaning |
-|--------|---------|
-| `DisplayID` | item display ID entry as in the ItemDisplayInfo.dbc |
-| `ModelPath` | full path of the model to use for pre-loading ending with the .mdx extension |
-| `Model2Path` | full path of the model to use for pre-loading ending with the .mdx extension |
-| `Geoset1` | geosets of the model 1 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets |
-| `Geoset1` | geosets of the model 2 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets |
-
-Generally weapons only have 1 model and only skin geosets, but I wanted to give the option to modders to make complex weapons if they wanted.
-
-### `WXLWeaponTextures.csv`
-
-Sidecar for declaring the textures to bake into the weapons
-
-| Column | Meaning |
-|--------|---------|
-| `DisplayID` | item display ID entry as in the ItemDisplayInfo.dbc |
-| `ModelColumn` | 0 or 1 depending if the textures must be baked on the first or second model declared in the previous .csv |
-| `TextureType` | Texture Type of the texture to be baked. See tables below for reference. |
-| `TexturePath` | full path of the texture file to be baked |
-
-### `Changes to the ItemDisplayInfo.dbc`
-
-In order to make lazy loading and eviction logic for weapons to work, you must add a suffix to the model name similar to creatures: for example, staff_2h_ulatek_d_01.mdx on itemdisplayID = 71027 becomes staff_2h_ulatek_d_01_71027.mdx
 
 ---
 
@@ -296,60 +307,22 @@ If no attachment is specified in `Icon2`, the following defaults apply:
 
 ---
 
-## Sample DBC rows — Judgement armor set
-
-The examples below are a real two-colour Judgement armor set implemented with this module. Several pieces share a single collection M2 (`plate_raidpaladint2_d_01_chest.mdx`), using geoset filtering to show only the geometry relevant to each slot. Collection models live under `Item\ObjectComponent\collections\palat2\`. The belt uses a standalone per-slot model with the subfolder flag (`0x20`) so it can be packaged in its own directory.
-This is mostly meant to show of the various ways to use it, not how it is best to be used.
-
-### Judgement (original)
-
-| ID | Slot | Model1 | Model2 | ModelTexture1 | ModelTexture2 | Icon1 | Icon2 |
-|----|------|--------|--------|---------------|---------------|-------|-------|
-| 45888 | Head | `palat2\plate_raidpaladint2_d_01_helm.mdx` | | `palat2\plate_raidpaladint2_d_01_helm_be_m_6037071` | | inv_plate_raidpaladint2_d_01_HELM | |
-| 34258 | Shoulder | `palat2\plate_raidpaladint2_d_01_shoulder_l.mdx` | `palat2\plate_raidpaladint2_d_01_shoulder_r.mdx` | `palat2\plate_raidpaladint2_d_01_shoulder_l_6037139` | `palat2\plate_raidpaladint2_d_01_shoulder_l_6037139` | inv_plate_raidpaladint2_d_01_shoulder | |
-| 33635 | Chest | `palat2\plate_raidpaladint2_d_01_chest.mdx:2201` | | `palat2\plate_raidpaladint2_d_01_chest_be_m_6037063` | | inv_plate_raidpaladint2_d_01_chest | `19` |
-| 33633 | Belt | `plate_raidpaladint2_d_01_belt.mdx` | | `plate_raidpaladint2_d_01_belt_6037176` | | inv_plate_raidpaladint2_d_01_belt | `53::38` |
-| 33634 | Bracers | | | | | inv_plate_raidpaladint2_d_01_bracer | |
-| 33636 | Gloves | `palat2\plate_raidpaladint2_d_01_chest.mdx:401` | `palat2\plate_raidpaladint2_d_01_chest.mdx:2301` | `palat2\plate_raidpaladint2_d_01_chest_be_m_6037063` | `palat2\plate_raidpaladint2_d_01_chest_be_m_6037063` | inv_plate_raidpaladint2_d_01_glove | `19:19` |
-| 33637 | Legs | `palat2\plate_raidpaladint2_d_01_chest.mdx:1301` | | `palat2\plate_raidpaladint2_d_01_chest_be_m_6037063` | | inv_plate_raidpaladint2_d_01_pant | `19` |
-| 33639 | Boots | `palat2\plate_raidpaladint2_d_01_chest.mdx:2001` | | `palat2\plate_raidpaladint2_d_01_chest_be_m_6037063` | | inv_plate_raidpaladint2_d_01_boot | `19` |
-
-### Judgement Purple (recolor)
-
-| ID | Slot | Model1 | Model2 | ModelTexture1 | ModelTexture2 | Icon1 | Icon2 |
-|----|------|--------|--------|---------------|---------------|-------|-------|
-| 42853 | Shoulder | `palat2\plate_raidpaladint2_d_01_shoulder_l.mdx` | `palat2\plate_raidpaladint2_d_01_shoulder_r.mdx` | `palat2\plate_raidpaladint2_d_01_shoulder_purple` | `palat2\plate_raidpaladint2_d_01_shoulder_purple` | INV_Shoulder_37 | |
-| 42863 | Chest | `palat2\plate_raidpaladint2_d_01_chest.mdx:2201` | | `palat2\plate_raidpaladint2_d_01_chest_purple` | | INV_Chest_Plate11 | `19` |
-| 42862 | Belt | `plate_raidpaladint2_d_01_belt.mdx` | | `plate_raidpaladint2_d_01_belt_purple` | | INV_Belt_23 | `53::38` |
-| 42851 | Bracers | | | | | INV_Bracer_13 | |
-| 43639 | Gloves | `palat2\plate_raidpaladint2_d_01_chest.mdx:401` | `palat2\plate_raidpaladint2_d_01_chest.mdx:2301` | `palat2\plate_raidpaladint2_d_01_chest_purple` | `palat2\plate_raidpaladint2_d_01_chest_purple` | INV_Gauntlets_09 | `19:19` |
-| 42859 | Legs | `palat2\plate_raidpaladint2_d_01_chest.mdx:1301` | | `palat2\plate_raidpaladint2_d_01_chest_purple` | | INV_Chest_Cloth_59 | `19` |
-| 42864 | Boots | `palat2\plate_raidpaladint2_d_01_chest.mdx:2001` | | `palat2\plate_raidpaladint2_d_01_chest_purple` | | INV_Boots_Chain_08 | `19` |
-
-**Notes on this set:**
-
-- **Chest, Legs, Boots, Gloves** all load geosets from the same shared collection file. Attachment point `19` (Ground_Base) places them relative to the character root rather than a specific bone, which works because the collection M2 already has all bone transforms baked in.
-- **Gloves** split into two geoset groups (`401` + `2301`) across Model1 and Model2, both on attachment `19:19`, letting each half of the mesh be textured or toggled independently.
-- **Shoulders** use two separate M2 files for left (`_l`) and right (`_r`) pauldrons — the classic per-shoulder split. No Icon2 config needed; the defaults for the Shoulder slot already assign attachment 5 (right) to Model1 and attachment 6 (left) to Model2.
-- **Belt** uses Icon2 `53::38` — attachment 53 (BeltBuckle), no attachment for Model2, flags `0x26` (`0x20 | 0x04 | 0x02`): model is in its own subfolder, no race or gender suffix appended.
-- **Bracers** have no model entries. The bracer geometry is provided by the character's own skin geosets and does not need an attached M2.
-
----
-
 ## Known issues
 
 **Dirty vanilla DBC entries:** Many stock 3.3.5a `ItemDisplayInfo.dbc` rows have `ModelName_1` or `ModelName_2` populated with values copied from other items (typically shoulders) that were never cleaned up because they had no visual effect in the base client. With this module active, those values will resolve and cause "missing model" placeholder boxes to appear on characters.
 
 **Fix:** Clear `ModelName_1` and `ModelName_2` for any non-head/shoulder item that should not have an attached model. A cleanup script may be provided in a future release.
 
-**Unequipping collections**
-Unequipping does not clean up the attachment properly. I'll look into that soon.
+**Possible crashes if the model specified in the .dbc and / or .csv is not present in the game files **
 
 ---
 
 ## Future Plans
 
-Support all slots, like neck/rings/trinkets/etc...
+Adding support for real-time auto.mirroring of the main hand model for offhand equipment.
+Migrating most of the extension-native hooks and functions to ones already present in the new Core.
+Adding support for armor skin textures without having to add the _u suffix and/or convert them to .png then back to palleted .blp with 256 colors.
+How-to tutorials for collections and weapons (low priority)
 
 ---
 
