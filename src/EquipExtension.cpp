@@ -3204,19 +3204,39 @@ r.count = static_cast<uint16_t>(collN);
                 static char s_mainhandVirtualPath[280];
                 static char s_offhandVirtualPath[280];
 
-                // Offhand keeps its original, narrower behavior: ONLY override Model1 when the
-                // sidecar has an explicit offhand model configured for this displayId
-                // (WXLWeaponModels.csv's Model1OffhandPath) -- WeaponGetOffhandVirtualPath already
-                // encodes exactly that condition, so no separate check is needed here. Mainhand and
-                // ranged use the ordinary mainhand bake instead (WeaponGetVirtualPath), which mirrors
-                // whatever ItemModelData.dbc's own Model1 patch already names for a baked entry.
+                // Offhand: prefer an explicit offhand model (WXLWeaponModels.csv's
+                // Model1OffhandPath) when the sidecar has one -- WeaponGetOffhandVirtualPath already
+                // encodes exactly that condition. But a displayId with NO offhand row isn't
+                // necessarily "nothing to bake": items that are natively offhand-only (shields above
+                // all) have no separate mirrored model at all -- their own Model1Path (baked via
+                // WeaponGetVirtualPath, the same mainhand table every other column uses) IS already
+                // the correct offhand model, textures/geoset included. So on an offhand miss, fall
+                // back to the ordinary mainhand bake for this displayId instead of leaving Model1
+                // untouched -- that's the only way a shield's sidecar-baked textures ever reach the
+                // client, since it never goes through the mainhand slot to pick up that bake any
+                // other way. Mainhand and ranged are unaffected: they always used
+                // WeaponGetVirtualPath directly and still do.
                 const bool isOffhand = (a2 == kEquipSlotOffHand);
-                const bool overridden = isOffhand
-                    ? wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(
-                          displayId, 0, s_offhandVirtualPath, sizeof(s_offhandVirtualPath))
-                    : wxl::scripts::weaponextension::WeaponGetVirtualPath(
-                          displayId, 0, s_mainhandVirtualPath, sizeof(s_mainhandVirtualPath));
-                char* const vpath = isOffhand ? s_offhandVirtualPath : s_mainhandVirtualPath;
+                bool overridden;
+                char* vpath;
+                if (isOffhand)
+                {
+                    overridden = wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(
+                        displayId, 0, s_offhandVirtualPath, sizeof(s_offhandVirtualPath));
+                    vpath = s_offhandVirtualPath;
+                    if (!overridden)
+                    {
+                        overridden = wxl::scripts::weaponextension::WeaponGetVirtualPath(
+                            displayId, 0, s_mainhandVirtualPath, sizeof(s_mainhandVirtualPath));
+                        vpath = s_mainhandVirtualPath;
+                    }
+                }
+                else
+                {
+                    overridden = wxl::scripts::weaponextension::WeaponGetVirtualPath(
+                        displayId, 0, s_mainhandVirtualPath, sizeof(s_mainhandVirtualPath));
+                    vpath = s_mainhandVirtualPath;
+                }
 
                 // BUG FIX (missing-model cubes on both hands): WeaponGetVirtualPath/
                 // WeaponGetOffhandVirtualPath return the FULL directory-qualified vkey --
@@ -3263,10 +3283,10 @@ r.count = static_cast<uint16_t>(collN);
                 }
                 else
                 {
-                    // Offhand: no sidecar Model1OffhandPath for this displayId -- per spec, skip
-                    // the bake and leave Model1 as ItemModelData.dbc already resolved it.
-                    // Mainhand/ranged: nothing to bake (no texture row/geoset filter) -- same
-                    // outcome, leave the already-resolved record untouched.
+                    // Neither the offhand bake nor the mainhand fallback (offhand) / the mainhand
+                    // bake alone (mainhand/ranged) had anything to apply -- no sidecar model path,
+                    // or a model path with no texture row/geoset filter to actually change. Leave
+                    // Model1 as ItemModelData.dbc/ItemDisplayInfo already resolved it.
                     EquipLog("[DIAG seq=%u] kCharAddHandItem: no sidecar %s model for displayId=%u, "
                              "leaving Model1 as-is", seq, isOffhand ? "offhand" : "mainhand/ranged",
                              displayId);
