@@ -14,9 +14,15 @@ DisplayID,ModelColumn,TextureType,TexturePath
 71028,0,2,item\objectcomponents\Shield\shield_1h_emeralddreamraid_d_02_blue.blp
 71028,0,3,item\objectcomponents\Shield\shield_1h_emeralddreamraid_d_02_5224475.blp
 71028,0,4,item\objectcomponents\Shield\shield_1h_emeralddreamraid_d_01_5279833.blp
-71029,0,2,item\objectcomponents\Weapon\offhand_1h_dragonraid_d_01_green.blp
+71029,0,2,item\objectcomponents\Weapon\glaive_1h_blackdragonoutdoor_d_01_Red.blp
 71029,0,3,item\objectcomponents\Weapon\offhand_1h_dragonraid_d_01_4685973.blp
 71030,0,2,item\objectcomponents\Weapon\bow_1h_ulatek_d_01_orange.blp
 71030,0,3,item\objectcomponents\Weapon\bow_1h_ulatek_d_01_7488512.blp
 71030,0,4,item\objectcomponents\Weapon\knife_1h_ulatek_d_01_7702705.blp
 71030,0,24,item\objectcomponents\weapon\knife_1h_ulatek_d_01_7704393.blp
+71050,0,2,item\objectcomponents\Weapon\staff_2h_emeralddreamoutdoor_d_01_5159879.blp
+71050,0,3,item\objectcomponents\Weapon\staff_2h_emeralddreamoutdoor_d_01_5159884.blp
+71050,0,4,item\objectcomponents\Weapon\staff_2h_emeralddreamoutdoor_d_01_5159894.blp
+71050,0,24,item\objectcomponents\Weapon\glaive_1h_emeralddreamoutdoor_d_01_4996478.blp
+
+

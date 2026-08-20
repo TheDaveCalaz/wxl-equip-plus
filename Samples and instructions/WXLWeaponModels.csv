@@ -1,7 +1,8 @@
-DisplayID,Model1Path,Model2Path,Geoset1,Geoset2
-71017,Item\ObjectComponents\Weapon\staff_2h_ulatek_d_01.mdx,,,
-71018,Item\ObjectComponents\Weapon\staff_2h_ulatek_d_02.mdx,,,
-71027,Item\ObjectComponents\Weapon\staff_2h_ulatek_d_01.mdx,,,
-71028,Item\ObjectComponents\Shield\shield_1h_emeralddreamraid_d_02.mdx,,,
-71029,Item\ObjectComponents\Weapon\offhand_1h_dragonraid_d_01.mdx,,,
-71030,Item\ObjectComponents\Weapon\bow_1h_ulatek_d_01.mdx,,,
+DisplayID,Model1Path,Model2Path,Geoset1,Geoset2,Model1OffhandPath,Model2OffhandPath,Geoset1Offhand,Geoset2Offhand,NoAutoMirror
+71028,Item\ObjectComponents\Shield\shield_1h_emeralddreamraid_d_02.mdx,,,,,,,,
+71029,Item\ObjectComponents\Weapon\glaive_1h_blackdragonoutdoor_d_01_R.mdx,,,,Item\ObjectComponents\Weapon\glaive_1h_blackdragonoutdoor_d_01_L.mdx,,,,
+71017,Item\ObjectComponents\Weapon\staff_2h_ulatek_d_01.mdx,,,,,,,
+71018,Item\ObjectComponents\Weapon\staff_2h_ulatek_d_02.mdx,,,,,,,
+71027,Item\ObjectComponents\Weapon\staff_2h_ulatek_d_01.mdx,,,,,,,
+71030,Item\ObjectComponents\Weapon\bow_1h_ulatek_d_01.mdx,,,,,,,
+71050,Item\ObjectComponents\Weapon\staff_2h_emeralddreamoutdoor_d_01.mdx,,,,,,,

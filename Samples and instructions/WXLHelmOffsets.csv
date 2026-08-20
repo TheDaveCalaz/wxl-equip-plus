@@ -1,2 +1,6 @@
-Model,RaceSex,Mode,X,Y,Z
-armor_darkmoonjester_d_01_helm,,Add,0,0,0.08
+Model,RaceSex,Mode,Kind,X,Y,Z,Scale
+armor_darkmoonjester_d_01_helm,,Add,Helm,0,0,0.08,
+leather_raiddruidemerald_d_01_helm,,Add,Helm,0,0,0,
+helm_leather_raiddruidulatek_d_01.mdx,,Add,Helm,0,0,0,
+collections_leather_raiddruiddragon_d_01_helm,,Add,Helm,0,0,0,
+helm_leather_raiddruidmidnight_d_01.mdx,,Add,Helm,0,0,0,
