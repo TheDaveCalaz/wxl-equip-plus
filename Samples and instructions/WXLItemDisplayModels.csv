@@ -1,0 +1,10 @@
+DisplayID,ItemID,Slot,Layer,Side,Folder,Model,Texture,Geosets,Attach,SuffixPolicy,TexturePolicy,Flags
+71020,,Shoulder,Base,L,Shoulder,shoulder_leather_raiddruidmidnight_d_01_l.mdx,,,6,DBC,Exact,
+71020,,Shoulder,Base,R,Shoulder,shoulder_leather_raiddruidmidnight_d_01_r.mdx,,,5,DBC,Exact,
+71021,,Leg,Base,C,Collections,pant_leather_raiddruidmidnight_d_01.mdx,pant_leather_raiddruidmidnight_d_01_green,1301,19,DBC,Exact,
+71022,,Waist,Base,C,Collections,belt_leather_raiddruidmidnight_d_01.mdx,leather_raiddruidethereal_d_01_7445941,,53,DBC,Exact,
+71032,,Shoulder,Base,L,Shoulder,leather_raiddruidemerald_d_01_shoulder_l.mdx,,2602,6,DBC,Exact,
+71032,,Shoulder,Base,R,Shoulder,leather_raiddruidemerald_d_01_shoulder_r.mdx,,2602,5,DBC,Exact,
+71033,,Chest,Base,C,Collections,leather_raiddruidemerald_d_01_pant.mdx,leather_raiddruidemerald_d_01_pant_green,1301,19,DBC,Exact,
+71034,,Belt,Base,C,Waist,leather_raiddruidemerald_d_01_belt.mdx,leather_raiddruidemerald_d_01_belt_green,,53,DBC,Exact,
+71034,,Belt,Base,C,Waist,leather_raiddruidemerald_d_01_pant.mdx,leather_raiddruidemerald_d_01_pant_green,1801,19,DBC,Exact,
