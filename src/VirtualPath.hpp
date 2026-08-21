@@ -55,30 +55,6 @@ namespace wxl::scripts::equipextension
                          const char* materialPatchSpec = nullptr);
 
     /**
-     * @brief Looks up (without applying) the WXLHelmOffsets.csv-configured offset/scale for a real
-     *        model path, using the exact same matching/precedence rules ApplyModelOffsetAndScale
-     *        (VirtualPath.cpp) applies internally via its appended-bone-track trick.
-     *
-     * That trick only ever affects a model's OWN bone hierarchy evaluation, which is a no-op for
-     * root-skinned Collections attachments: their bone palette is fully overwritten every frame by
-     * a copy of the character skeleton's own posed matrices (see EquipExtension.cpp's
-     * OnBuildBonePalette / CopyRemappedBonesGuarded), so the model's own bone tracks -- including
-     * the injected one -- never get evaluated at all. For those attachments, EquipExtension.cpp
-     * calls this function itself and re-applies the same CSV-configured offset/scale directly to
-     * the just-copied bone-palette matrices, post-remap.
-     *
-     * @param name      Real (pre-normalization) model path -- same form ApplyModelOffsetAndScale
-     *                  takes (e.g. AttachEntry::keyBuf).
-     * @param outX/Y/Z  Filled with the resolved local-space offset (0 if none configured).
-     * @param outScale  Filled with the resolved scale (1.0f if none configured).
-     * @return true if a CSV row matched AND it resolves to a non-default offset or scale; false
-     *         (out params left at their neutral/default values) otherwise -- mirrors
-     *         ApplyModelOffsetAndScale's own opt-in, no-op-by-default behaviour.
-     */
-    bool VPathQueryModelOffsetAndScale(const char* name, float& outX, float& outY, float& outZ,
-                                       float& outScale);
-
-    /**
      * @brief Ensures the virtual .mdx and .skin bytes are in the client serve table.
      *
      * Reads the real .mdx and its 00.skin from the archive on first call for this key;
@@ -196,13 +172,40 @@ namespace wxl::scripts::equipextension
                              bool evictable = false,
                              char* outVirtualPath = nullptr, size_t outVirtualPathSz = 0,
                              const char* evictionPool = "Creature",
-                             bool forceBake = false);
+                             bool forceBake = false,
+                             bool mirrorAcrossY = false,
+                             const char* keySuffix = nullptr);
     // forceBake: bypasses the "nothing to change" guard (normally, a call with no texPath, no
     // materialPatchSpec, and no geoset filter is a no-op, since there'd be nothing to actually
     // patch versus just naming the real file directly). Set true when the caller's whole reason for
     // baking is to serve a DIFFERENT real file under its own virtual key -- e.g. an offhand-mirrored
     // weapon model with identical textures to its mainhand counterpart -- where the point isn't to
     // patch anything, just to mint a distinct virtual name pointing at different bytes on disk.
+    // mirrorAcrossY: applies a geometric Y-axis mirror to the read bytes before they're registered --
+    // VirtualPath.cpp's MirrorModelBytes (vertex positions/normals, bone pivots + every
+    // translation/rotation keyframe, attachment points, bounding volumes) on the .m2, and
+    // MirrorSkinWinding (reverses each triangle's last two indices, undoing the backface-culling
+    // flip a single-axis mirror otherwise causes) on the .skin, if one was read. Fails (returns
+    // false, nothing registered) if either mirror step fails its own internal bounds/format checks --
+    // this never silently registers a half-mirrored or unmirrored result. Default false: every
+    // existing caller is unaffected; WeaponExtension.cpp's BakeWeaponDisplayOffhand is the only
+    // caller that ever passes true, driven by WXLWeaponModels.csv's NoAutoMirror column (opt-in,
+    // despite the name -- see WeaponModelPaths::mirrorOffhand's own doc comment for the naming
+    // history).
+    // keySuffix: optional string (e.g. "_oh") inserted into the virtual key right after the model's
+    // stem, before the "_<itemDisplayId>" piece and extension (see BuildGlobalVirtualKey in
+    // VirtualPath.cpp), so the resulting vkey is distinct from the plain <stem>_<itemDisplayId>.m2
+    // form even when realMdxPath and itemDisplayId exactly match some other call's. MUST be
+    // lowercase -- VirtualProvide normalizes every incoming client request to lowercase before
+    // lookup, but the stored key is never re-normalized after this call builds it, so any uppercase
+    // character here produces a key the client can never actually match (silent MISS, model missing
+    // in-game, despite the bake itself succeeding). Default nullptr -- every existing caller keeps
+    // the original, unsuffixed key. WeaponExtension.cpp's BakeWeaponDisplayOffhand always passes
+    // "_oh" here, for BOTH the mirrored and non-mirrored offhand cases: without it, an OffhandPath
+    // row that names the exact same real file as the mainhand Model path for that displayId/column
+    // would derive the identical <stem>_<itemDisplayId>.m2 vkey as BakeWeaponDisplay's mainhand bake
+    // and silently collide with (and lose to, "first bake wins") whichever of the two bakes ran
+    // first.
 
     /**
      * @brief Reads/patches byteSourcePath's bytes like VPathPopulateGlobal, but derives the virtual
@@ -229,50 +232,6 @@ namespace wxl::scripts::equipextension
                                       uint32_t itemDisplayId, const char* texPath,
                                       const char* materialPatchSpec, const uint16_t* geoIds,
                                       uint32_t geoCount, char* outVirtualPath, size_t outVirtualPathSz);
-
-    /**
-     * @brief Auto-mirror fallback: reads realMdxPath's own .m2 + .skin bytes (normally a mainhand
-     *        one-handed weapon's model), geometrically mirrors them across the X axis (vertex/normal
-     *        positions, bone pivots + every translation/rotation keyframe, attachment offsets,
-     *        bounding/collision volumes, and skin triangle winding), optionally applies
-     *        materialPatchSpec/geoIds on top exactly like VPathPopulateGlobal, and registers the
-     *        result under its OWN distinct virtual key -- never the same key realMdxPath's own
-     *        (unmirrored) mainhand bake uses for the same itemDisplayId, so the two can coexist and
-     *        be independently baked/evicted without clobbering each other.
-     *
-     *        Used as the offhand fallback when WXLWeaponModels.csv gives no explicit
-     *        Model1OffhandPath/Model2OffhandPath for a displayId/column that IS dual-wielded (see
-     *        BakeWeaponDisplayOffhand in WeaponExtension.cpp) -- a plain, unmirrored reuse of the
-     *        mainhand bake would render a one-handed weapon's blade/hilt backwards in the offhand.
-     *        NOT what natively offhand-only items (shields) want -- those have no "mainhand" this
-     *        would mirror FROM and should skip this entirely (WXLWeaponModels.csv's NoAutoMirror
-     *        column; see BakeWeaponDisplayOffhand's own doc comment).
-     *
-     *        Fails closed: any bounds-check failure while mirroring the .m2 or .skin bytes (mismatched
-     *        struct layout, truncated/corrupt file, unexpected chunked format) aborts the whole bake
-     *        and returns false without registering anything, exactly like VPathPopulateGlobal's own
-     *        read-failure path -- an offhand weapon that fails to auto-mirror just keeps whatever
-     *        Model1 was already resolved to, never a corrupted or crashing model.
-     *
-     * @param realMdxPath        Real archive path of the model to mirror -- normally the sidecar's
-     *                           own Model1Path/Model2Path for this displayId/column (the mainhand
-     *                           model), NOT an offhand-specific path (there isn't one -- that's the
-     *                           whole reason this function exists).
-     * @param itemDisplayId      Folded into the virtual key exactly as in VPathPopulateGlobal.
-     * @param materialPatchSpec  Same meaning as VPathPopulateGlobal -- pass nullptr/empty to skip.
-     * @param geoIds/geoCount    Same meaning as VPathPopulateGlobal -- pass nullptr/0 to skip.
-     * @param evictable          Same meaning as VPathPopulateGlobal.
-     * @param outVirtualPath/outVirtualPathSz  Receives the mirrored bake's own distinct virtual path.
-     * @param evictionPool       Same meaning as VPathPopulateGlobal.
-     * @return true if realMdxPath's bytes were read and successfully mirrored and registered; false
-     *         (nothing registered) on any read failure or mirroring bounds-check failure.
-     */
-    bool VPathPopulateGlobalMirrored(const char* realMdxPath, uint32_t itemDisplayId,
-                                     const char* materialPatchSpec,
-                                     const uint16_t* geoIds, uint32_t geoCount,
-                                     bool evictable,
-                                     char* outVirtualPath, size_t outVirtualPathSz,
-                                     const char* evictionPool = "Weapon");
 
     /**
      * @brief Signature for a lazy-bake resolver registered via VPathRegisterLazyResolver.

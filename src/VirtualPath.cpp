@@ -414,10 +414,26 @@ namespace wxl::scripts::equipextension
             return q;
         }
 
-        // Builds the per-itemDisplayId virtual key for VPathPopulateGlobal: <stem>_<itemDisplayId>.m2
+        // Builds the per-itemDisplayId virtual key for VPathPopulateGlobal:
+        // <stem><keySuffix>_<itemDisplayId>.m2
         // normPath must already be normalized (lowercase, .m2 extension) by NormalizeRealPath.
+        // keySuffix (optional, may be nullptr/empty) is inserted right after the stem, BEFORE the
+        // "_<itemDisplayId>" suffix and the extension -- e.g. "_oh" -- so a caller can mint a key
+        // that's guaranteed distinct from the plain <stem>_<itemDisplayId>.m2 form even when
+        // normPath and itemDisplayId are identical to some other bake's. WeaponExtension.cpp's
+        // BakeWeaponDisplayOffhand uses this to keep an offhand bake from colliding with the
+        // mainhand bake for the same displayId/column when WXLWeaponModels.csv's OffhandPath
+        // happens to name the very same real file as the mainhand Model path (a common case for
+        // items that only differ by the runtime mirror step).
+        // keySuffix must itself already be lowercase: VirtualProvide normalizes every incoming
+        // client request to lowercase before it looks the key up in g_globalOverrides (a plain
+        // case-sensitive string map), but nothing normalizes vKey again after this function builds
+        // it. normPath is already lowercase by the time it gets here, so an uppercase keySuffix
+        // would be the only source of mixed case in the final key -- and mixed case here means the
+        // client's lowercase lookup can never match what got stored, i.e. a guaranteed MISS.
         static void BuildGlobalVirtualKey(char* out, size_t outSz, const char* normPath,
-                                          uint32_t itemDisplayId) noexcept
+                                          uint32_t itemDisplayId,
+                                          const char* keySuffix = nullptr) noexcept
         {
             if (!out || outSz == 0) return;
             char* q   = out;
@@ -427,6 +443,14 @@ namespace wxl::scripts::equipextension
             for (const char* p = normPath; *p; ++p) if (*p == '.') lastDot = p;
             const char* stemEnd = lastDot ? lastDot : normPath + std::strlen(normPath);
             for (const char* p = normPath; p < stemEnd && q < end; ) *q++ = *p++;
+
+            // Force-lowercase keySuffix as it's copied in -- see this function's doc comment for
+            // why. Inserted right after the stem, before the "_<itemDisplayId>" piece, so it reads
+            // as part of the model's own root name (e.g. "sword_01_oh_12345.m2") rather than being
+            // tacked onto the very end after the displayId.
+            if (keySuffix && *keySuffix)
+                for (const char* p = keySuffix; *p && q < end; ++p)
+                    *q++ = static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
 
             if (q < end) *q++ = '_';
             q = WriteU32Dec(q, end, itemDisplayId);
@@ -1309,20 +1333,13 @@ namespace wxl::scripts::equipextension
 
     // Public entry point: called from VPathPopulate right after the real .m2 bytes are read. name
     // is the real (pre-normalization) DBC-style path, e.g. 'Item\ObjectComponents\Head\foo_Be_F.mdx'.
-    // Shared resolution core: finds the best-matching WXLHelmOffsets.csv row for 'name' (same
-    // precedence ModelRuleScore has always used) and resolves it to a final (x,y,z,scale). Used by
-    // both ApplyModelOffsetAndScale (bone-track injection, for models whose own bone hierarchy is
-    // actually evaluated) and VPathQueryModelOffsetAndScale (bone-palette post-copy path, for
-    // root-skinned Collections attachments where the injected track is otherwise never evaluated --
-    // see EquipExtension.cpp's OnBuildBonePalette). Returns false (out params left at neutral
-    // defaults) if no row matches, the row disables itself, or it resolves to a no-op.
-    static bool ResolveModelOffsetAndScale(const char* name, float& x, float& y, float& z,
-                                           float& scale, bool& haveOffset, bool& haveScale)
+    // No-op (returns without modifying model) if nothing in WXLHelmOffsets.csv applies and the
+    // model's own filename doesn't parse as a per-race helm suffix -- i.e. touching zero bytes and
+    // zero bone flags for every model that was never meant to be offset/scaled at all.
+    static void ApplyModelOffsetAndScale(const char* name, std::vector<uint8_t>& model)
     {
-        x = y = z = 0.0f; scale = 1.0f; haveOffset = false; haveScale = false;
-
         LoadModelOffsets();
-        if (g_modelOffsetRules.empty()) return false;
+        if (g_modelOffsetRules.empty()) return;
 
         char id[8] = {};
         const bool hasRaceId = ModelRaceId(name, id, sizeof(id));
@@ -1342,8 +1359,11 @@ namespace wxl::scripts::equipextension
                                              hasRaceId ? id : "");
             if (score > bestScore) { best = &rule; bestScore = score; }
         }
-        if (!best) return false;          // no CSV row at all for this model: do nothing (opt-in)
-        if (best->disable) return false;  // explicit disable: do nothing
+        if (!best) return;               // no CSV row at all for this model: do nothing (opt-in)
+        if (best->disable) return;        // explicit disable: do nothing
+
+        float x = 0.0f, y = 0.0f, z = 0.0f, scale = 1.0f;
+        bool haveOffset = false, haveScale = false;
 
         if (best->isHelm && hasRaceId)
         {
@@ -1366,26 +1386,20 @@ namespace wxl::scripts::equipextension
         }
         if (best->hasScale) { scale = best->scale; haveScale = true; }
 
-        return haveOffset || haveScale;
-    }
-
-    // No-op (returns without modifying model) if nothing in WXLHelmOffsets.csv applies and the
-    // model's own filename doesn't parse as a per-race helm suffix -- i.e. touching zero bytes and
-    // zero bone flags for every model that was never meant to be offset/scaled at all.
-    static void ApplyModelOffsetAndScale(const char* name, std::vector<uint8_t>& model)
-    {
-        float x, y, z, scale; bool haveOffset, haveScale;
-        if (!ResolveModelOffsetAndScale(name, x, y, z, scale, haveOffset, haveScale)) return;
+        if (!haveOffset && !haveScale) return;
         InjectModelOffsetAndScale(name, model, haveOffset, x, y, z, haveScale, scale);
     }
 
-    // ─── Full geometric weapon mirroring (auto offhand fallback) ───────────────────────────────
-    // Mirrors a mainhand weapon's .m2 + .skin bytes across the X axis for correct offhand display,
-    // used only when WXLWeaponModels.csv has no explicit Model1OffhandPath/Model2OffhandPath for
-    // this displayId -- an explicit hand-baked override always wins (see WeaponGetOffhandVirtualPath
-    // in WeaponExtension.cpp). Struct layouts below cross-checked against M2AlastorOne.bt (010
-    // Editor template, "Tested on 3.3.5 / 7.0.1 / 8.0.1 / 9.0.1 / 9.2.0"), the parts core's own
-    // M2Format.hpp doesn't define (M2Vertex, M2Attachment, the compressed rotation quaternion).
+    // ─── Geometric weapon mirroring (opt-in offhand Y-mirror) ───────────────────────────────────
+    // Mirrors a weapon's .m2 + .skin bytes across the Y axis. Used by VPathPopulateGlobal's
+    // mirrorAcrossY parameter, driven from WeaponExtension.cpp's BakeWeaponDisplayOffhand when
+    // WXLWeaponModels.csv's NoAutoMirror column is set for a displayId/column -- an explicit,
+    // opt-in transform applied to whatever offhandPath model that row already names, NOT a fallback
+    // that synthesizes a mirror from the mainhand model when offhandPath is absent (offhandPath is
+    // still required either way; see WeaponGetOffhandVirtualPath in WeaponExtension.cpp). Struct
+    // layouts below cross-checked against M2AlastorOne.bt (010 Editor template, "Tested on
+    // 3.3.5 / 7.0.1 / 8.0.1 / 9.0.1 / 9.2.0"), the parts core's own M2Format.hpp doesn't define
+    // (M2Vertex, M2Attachment, the compressed rotation quaternion).
 
 #pragma pack(push, 1)
     // 0x30 bytes, unchanged since Classic. Position@0x00, BoneWeight@0x0C, BoneIndices@0x10,
@@ -1432,14 +1446,14 @@ namespace wxl::scripts::equipextension
     static_assert(sizeof(M2SkinHeaderRaw) == 0x30, "M2SkinHeaderRaw");
 #pragma pack(pop)
 
-    // Mirrors a compressed rotation quaternion (4x uint16, decoded as (v/32767.0)-1.0) across the X
-    // axis. Derivation: mirroring negates the X component of every vector; for a rotation R to look
-    // correctly mirrored we need R' = m*R*m (m = diag(-1,1,1)), which works out to negating the two
+    // Mirrors a compressed rotation quaternion (4x uint16, decoded as (v/32767.0)-1.0) across the Y
+    // axis. Derivation: mirroring negates the Y component of every vector; for a rotation R to look
+    // correctly mirrored we need R' = m*R*m (m = diag(1,-1,1)), which works out to negating the two
     // quaternion components NOT on the mirrored axis, leaving the mirrored-axis component and w
-    // unchanged: q' = (qx, -qy, -qz, qw). Checked against two cases: a Z-axis rotation correctly
-    // flips to -theta (mirrors reverse in-plane rotation handedness); a rotation about X itself (the
+    // unchanged: q' = (-qx, qy, -qz, qw). Checked against two cases: a Z-axis rotation correctly
+    // flips to -theta (mirrors reverse in-plane rotation handedness); a rotation about Y itself (the
     // mirror's own axis) comes out unchanged (the axis-flip and handedness-reversal cancel).
-    static void MirrorCompressedQuatX(uint16_t& x, uint16_t& y, uint16_t& z, uint16_t& /*w*/) noexcept
+    static void MirrorCompressedQuatY(uint16_t& x, uint16_t& /*y*/, uint16_t& z, uint16_t& /*w*/) noexcept
     {
         constexpr float kMaxShort = 32767.0f;
         auto stf = [&](uint16_t v) { return (static_cast<float>(v) / kMaxShort) - 1.0f; };
@@ -1449,12 +1463,12 @@ namespace wxl::scripts::equipextension
             if (v > 65535.0f) v = 65535.0f;
             return static_cast<uint16_t>(v + 0.5f);
         };
-        y = fts(-stf(y));
+        x = fts(-stf(x));
         z = fts(-stf(z));
-        // x, w untouched
+        // y, w untouched
     }
 
-    // Negates the X component of every value in a translation (C3Vector) or rotation (compressed
+    // Negates the Y component of every value in a translation (C3Vector) or rotation (compressed
     // quaternion) track, across every sequence -- walks the same nested M2Array-of-M2Array
     // indirection the offset-injection code above appends new data into, except here the data
     // already exists in the model and is being rewritten in place (no resize, no relinking).
@@ -1471,7 +1485,7 @@ namespace wxl::scripts::equipextension
                                        uint64_t(outer[s].count) * (sizeof(float) * 3);
             if (!outer[s].count || innerEnd > model.size()) continue;
             auto* vals = reinterpret_cast<float*>(model.data() + outer[s].offset);
-            for (uint32_t k = 0; k < outer[s].count; ++k) vals[k * 3 + 0] = -vals[k * 3 + 0];
+            for (uint32_t k = 0; k < outer[s].count; ++k) vals[k * 3 + 1] = -vals[k * 3 + 1];
         }
     }
 
@@ -1489,24 +1503,21 @@ namespace wxl::scripts::equipextension
             if (!outer[s].count || innerEnd > model.size()) continue;
             auto* vals = reinterpret_cast<uint16_t*>(model.data() + outer[s].offset);
             for (uint32_t k = 0; k < outer[s].count; ++k)
-                MirrorCompressedQuatX(vals[k * 4 + 0], vals[k * 4 + 1], vals[k * 4 + 2], vals[k * 4 + 3]);
+                MirrorCompressedQuatY(vals[k * 4 + 0], vals[k * 4 + 1], vals[k * 4 + 2], vals[k * 4 + 3]);
         }
     }
 
     // Mirrors vertex positions/normals, bone pivots + translation/rotation keyframes (every
-    // sequence, not just a synthesized key), attachment offsets, and bounding volumes. Does NOT
-    // touch scale tracks (scale is an unsigned magnitude, not a signed direction -- the mirror is
-    // already fully expressed by the position/rotation changes above it). Returns false (model left
-    // untouched) on any bounds-check failure, matching the append-side injection code's own
-    // fail-closed convention.
+    // sequence, not just a synthesized key), attachment offsets, and bounding volumes -- all across
+    // the Y axis. Does NOT touch scale tracks (scale is an unsigned magnitude, not a signed
+    // direction -- the mirror is already fully expressed by the position/rotation changes above
+    // it). Returns false (model left untouched) on any bounds-check failure, matching the
+    // append-side injection code's own fail-closed convention.
     static bool MirrorModelBytes(const char* name, std::vector<uint8_t>& model) noexcept
     {
         if (model.size() < sizeof(fmt::M2Header)) return false;
         auto* md = reinterpret_cast<fmt::M2Header*>(model.data());
         if (md->magic != fmt::kMagicMD20) return false;
-
-        float dbgMinXBefore = 0.0f, dbgMaxXBefore = 0.0f, dbgMinXAfter = 0.0f, dbgMaxXAfter = 0.0f;
-        uint32_t dbgVerticesOffset = md->vertices.offset;
 
         __try
         {
@@ -1517,25 +1528,10 @@ namespace wxl::scripts::equipextension
                                       uint64_t(md->vertices.count) * sizeof(M2VertexRaw);
                 if (end > model.size()) return false;
                 auto* v = reinterpret_cast<M2VertexRaw*>(model.data() + md->vertices.offset);
-
-                dbgMinXBefore = dbgMaxXBefore = v[0].position[0];
-                for (uint32_t i = 1; i < md->vertices.count; ++i)
-                {
-                    if (v[i].position[0] < dbgMinXBefore) dbgMinXBefore = v[i].position[0];
-                    if (v[i].position[0] > dbgMaxXBefore) dbgMaxXBefore = v[i].position[0];
-                }
-
                 for (uint32_t i = 0; i < md->vertices.count; ++i)
                 {
-                    v[i].position[0] = -v[i].position[0];
-                    v[i].normal[0]   = -v[i].normal[0];
-                }
-
-                dbgMinXAfter = dbgMaxXAfter = v[0].position[0];
-                for (uint32_t i = 1; i < md->vertices.count; ++i)
-                {
-                    if (v[i].position[0] < dbgMinXAfter) dbgMinXAfter = v[i].position[0];
-                    if (v[i].position[0] > dbgMaxXAfter) dbgMaxXAfter = v[i].position[0];
+                    v[i].position[1] = -v[i].position[1];
+                    v[i].normal[1]   = -v[i].normal[1];
                 }
             }
 
@@ -1552,7 +1548,7 @@ namespace wxl::scripts::equipextension
                     // only) -- kept defensive since this loop mutates the same buffer it reads from.
                     auto* bone = reinterpret_cast<fmt::M2CompBone*>(
                         model.data() + md->bones.offset + i * sizeof(fmt::M2CompBone));
-                    bone->pivot[0] = -bone->pivot[0];
+                    bone->pivot[1] = -bone->pivot[1];
                     MirrorTranslationTrack(model, bone->translation);
                     MirrorRotationTrack(model, bone->rotation);
                 }
@@ -1566,21 +1562,21 @@ namespace wxl::scripts::equipextension
                 if (end > model.size()) return false;
                 auto* a = reinterpret_cast<M2AttachmentRaw*>(model.data() + md->attachments.offset);
                 for (uint32_t i = 0; i < md->attachments.count; ++i)
-                    a[i].position[0] = -a[i].position[0];
+                    a[i].position[1] = -a[i].position[1];
             }
 
-            // Bounding/collision volumes: min/max X swap-and-negate (a min becomes the new max and
+            // Bounding/collision volumes: min/max Y swap-and-negate (a min becomes the new max and
             // vice versa once negated), sphere/box centers unaffected by a symmetric-radius model.
             // boundingBox/collisionBox are [minX,minY,minZ,maxX,maxY,maxZ].
             {
-                float newMinX = -md->boundingBox[3];
-                float newMaxX = -md->boundingBox[0];
-                md->boundingBox[0] = newMinX;
-                md->boundingBox[3] = newMaxX;
-                float newCMinX = -md->collisionBox[3];
-                float newCMaxX = -md->collisionBox[0];
-                md->collisionBox[0] = newCMinX;
-                md->collisionBox[3] = newCMaxX;
+                float newMinY = -md->boundingBox[4];
+                float newMaxY = -md->boundingBox[1];
+                md->boundingBox[1] = newMinY;
+                md->boundingBox[4] = newMaxY;
+                float newCMinY = -md->collisionBox[4];
+                float newCMaxY = -md->collisionBox[1];
+                md->collisionBox[1] = newCMinY;
+                md->collisionBox[4] = newCMaxY;
             }
             if (md->collisionPositions.count)
             {
@@ -1589,7 +1585,7 @@ namespace wxl::scripts::equipextension
                 if (end <= model.size())
                 {
                     auto* p = reinterpret_cast<float*>(model.data() + md->collisionPositions.offset);
-                    for (uint32_t i = 0; i < md->collisionPositions.count; ++i) p[i * 3] = -p[i * 3];
+                    for (uint32_t i = 0; i < md->collisionPositions.count; ++i) p[i * 3 + 1] = -p[i * 3 + 1];
                 }
             }
             if (md->collisionNormals.count)
@@ -1599,7 +1595,7 @@ namespace wxl::scripts::equipextension
                 if (end <= model.size())
                 {
                     auto* n = reinterpret_cast<float*>(model.data() + md->collisionNormals.offset);
-                    for (uint32_t i = 0; i < md->collisionNormals.count; ++i) n[i * 3] = -n[i * 3];
+                    for (uint32_t i = 0; i < md->collisionNormals.count; ++i) n[i * 3 + 1] = -n[i * 3 + 1];
                 }
             }
         }
@@ -1609,10 +1605,8 @@ namespace wxl::scripts::equipextension
             return false;
         }
 
-        VPathLog("  MirrorModelBytes: '%s' vertices=%u bones=%u attachments=%u ofsVertices=0x%X "
-                 "X range before=[%.4f,%.4f] after=[%.4f,%.4f]", name ? name : "?",
-                 md->vertices.count, md->bones.count, md->attachments.count, dbgVerticesOffset,
-                 dbgMinXBefore, dbgMaxXBefore, dbgMinXAfter, dbgMaxXAfter);
+        VPathLog("  MirrorModelBytes: '%s' vertices=%u bones=%u attachments=%u", name ? name : "?",
+                 md->vertices.count, md->bones.count, md->attachments.count);
         return true;
     }
 
@@ -1646,130 +1640,15 @@ namespace wxl::scripts::equipextension
         return true;
     }
 
-    // Builds the mirrored-bake virtual key: BuildGlobalVirtualKey's own "<stem>_<id><ext>" shape
-    // with an extra "_oh" tag inserted before the extension -- "<stem>_<id>_oh<ext>" -- so a
-    // mirrored offhand bake of realMdxPath NEVER collides with the ordinary (unmirrored) mainhand
-    // bake VPathPopulateGlobal/BakeWeaponDisplay registers for the exact same (realMdxPath,
-    // itemDisplayId) pair. Deliberately NOT decodable by VPathDecodeGlobalVirtualKey (the "_oh"
-    // breaks its trailing-digit-run scan) -- WeaponLazyResolve only ever needs to rebake mainhand
-    // entries on a VirtualProvide miss (see its own doc comment); a mirrored offhand entry is
-    // rebaked by WeaponGetOffhandVirtualPath itself instead, called fresh on every equip event, the
-    // same way the explicit-OffhandPath case already worked before this function existed.
-    static void BuildMirroredVirtualKey(char* out, size_t outSz, const char* normPath,
-                                        uint32_t itemDisplayId) noexcept
-    {
-        char base[280];
-        BuildGlobalVirtualKey(base, sizeof(base), normPath, itemDisplayId);
-
-        if (!out || outSz == 0) return;
-        char* lastDot = nullptr;
-        for (char* p = base; *p; ++p) if (*p == '.') lastDot = p;
-
-        char* q   = out;
-        char* end = out + outSz - 1;
-        const char* stemEnd = lastDot ? lastDot : (base + std::strlen(base));
-        for (const char* p = base; p < stemEnd && q < end; ) *q++ = *p++;
-        for (const char* p = "_oh"; *p && q < end; ) *q++ = *p++;
-        for (const char* p = (lastDot ? lastDot : ".m2"); *p && q < end; ) *q++ = *p++;
-        *q = '\0';
-    }
-
-    bool VPathPopulateGlobalMirrored(const char* realMdxPath, uint32_t itemDisplayId,
-                                     const char* materialPatchSpec,
-                                     const uint16_t* geoIds, uint32_t geoCount,
-                                     bool evictable,
-                                     char* outVirtualPath, size_t outVirtualPathSz,
-                                     const char* evictionPool)
-    {
-        if (!realMdxPath || !*realMdxPath) return false;
-        const bool hasMatSpec   = materialPatchSpec && *materialPatchSpec;
-        const bool hasGeoFilter = geoIds && geoCount > 0;
-
-        char normPath[264];
-        NormalizeRealPath(normPath, sizeof(normPath), realMdxPath);
-
-        char vKey[280];
-        BuildMirroredVirtualKey(vKey, sizeof(vKey), normPath, itemDisplayId);
-
-        if (outVirtualPath && outVirtualPathSz)
-        {
-            size_t n = std::strlen(vKey);
-            if (n >= outVirtualPathSz) n = outVirtualPathSz - 1;
-            std::memcpy(outVirtualPath, vKey, n);
-            outVirtualPath[n] = '\0';
-        }
-
-        // First mirrored bake for this (realMdxPath, itemDisplayId) wins for the rest of the
-        // session, same "first bake wins" convention as VPathPopulateGlobal -- this is also what
-        // makes a redundant re-call from WeaponGetOffhandVirtualPath on every equip a cheap no-op
-        // once the mirror has actually been baked.
-        if (g_globalOverrides.count(vKey)) return true;
-
-        std::vector<uint8_t> mdxBytes;
-        if (!ReadGameFile(normPath, mdxBytes))
-        {
-            VPathLog("  VPathPopulateGlobalMirrored: mdx READ FAILED '%s'", normPath);
-            return false;
-        }
-
-        char rSkin[264];
-        RealSkinPath(rSkin, sizeof(rSkin), normPath);
-        std::vector<uint8_t> skinBytes;
-        const bool hadSkinFile = ReadGameFile(rSkin, skinBytes); // absent skin is OK, just no winding fix
-
-        if (hasGeoFilter)
-            ApplySkinByteFilter(skinBytes, geoIds, geoCount);
-        if (hasMatSpec)
-            PatchTargetedMaterialTextures(mdxBytes, materialPatchSpec);
-
-        // Fail closed: a mirror that can't be verified geometrically correct is worse than none --
-        // the caller's existing Model1 (unmirrored, backwards in the offhand) at least renders
-        // without crashing.
-        if (!MirrorModelBytes(normPath, mdxBytes))
-        {
-            VPathLog("  VPathPopulateGlobalMirrored: MirrorModelBytes FAILED '%s' -- bake aborted",
-                     normPath);
-            return false;
-        }
-        if (hadSkinFile && !skinBytes.empty())
-        {
-            if (!MirrorSkinWinding(normPath, skinBytes))
-            {
-                VPathLog("  VPathPopulateGlobalMirrored: MirrorSkinWinding FAILED '%s' -- bake "
-                         "aborted", normPath);
-                return false;
-            }
-        }
-
-        VPathLog("  VPathPopulateGlobalMirrored: '%s' (displayId=%u) -> vkey='%s' mdx=%zu skin=%zu "
-                 "bytes (spec='%s' geoCount=%u)", normPath, itemDisplayId, vKey, mdxBytes.size(),
-                 skinBytes.size(), hasMatSpec ? materialPatchSpec : "", geoCount);
-
-        char vSkin[280];
-        VirtualSkinPath(vSkin, sizeof(vSkin), vKey);
-
-        const bool hasSkin = !skinBytes.empty();
-        g_globalOverrides.emplace(vKey, std::move(mdxBytes));
-        if (hasSkin)
-            g_globalOverrides.emplace(vSkin, std::move(skinBytes));
-
-        if (evictable)
-        {
-            const std::string pool = (evictionPool && *evictionPool) ? evictionPool : "Weapon";
-            RegisterEvictableGroup(pool, vKey, vSkin, hasSkin);
-        }
-
-        return true;
-    }
-
-    bool VPathQueryModelOffsetAndScale(const char* name, float& outX, float& outY, float& outZ,
-                                       float& outScale)
-    {
-        outX = outY = outZ = 0.0f; outScale = 1.0f;
-        if (!name || !*name) return false;
-        bool haveOffset = false, haveScale = false;
-        return ResolveModelOffsetAndScale(name, outX, outY, outZ, outScale, haveOffset, haveScale);
-    }
+    // MirrorWeaponForOffhand / VPathPopulateGlobalMirrored (the old FULL auto-mirror offhand bake --
+    // synthesizing a mirrored offhand model FROM the mainhand model whenever the CSV named no
+    // explicit offhand path at all) are still gone: that whole-pipeline auto-mirror was crashing on
+    // equip. The MirrorModelBytes/MirrorSkinWinding routines above are no longer dead code, though --
+    // VPathPopulateGlobal's mirrorAcrossY parameter now calls both, applying the same Y-mirror to an
+    // explicit, author-supplied offhandPath row instead of a synthesized one (see WeaponExtension.cpp's
+    // BakeWeaponDisplayOffhand, gated on WXLWeaponModels.csv's NoAutoMirror column). Narrower in
+    // scope than the old feature (never invents a mirror out of nothing; only ever transforms bytes
+    // the sidecar already named), but reuses the exact same per-vertex/per-triangle math.
 
     // ─── Public API ───────────────────────────────────────────────────────────
 
@@ -1893,7 +1772,8 @@ namespace wxl::scripts::equipextension
                              const char* texPath, const char* materialPatchSpec,
                              const uint16_t* geoIds, uint32_t geoCount, bool evictable,
                              char* outVirtualPath, size_t outVirtualPathSz,
-                             const char* evictionPool, bool forceBake)
+                             const char* evictionPool, bool forceBake, bool mirrorAcrossY,
+                             const char* keySuffix)
     {
         if (!realMdxPath || !*realMdxPath) return false;
         const bool hasTexPath = texPath && *texPath;
@@ -1912,7 +1792,7 @@ namespace wxl::scripts::equipextension
         NormalizeRealPath(normPath, sizeof(normPath), realMdxPath);
 
         char vKey[280];
-        BuildGlobalVirtualKey(vKey, sizeof(vKey), normPath, itemDisplayId);
+        BuildGlobalVirtualKey(vKey, sizeof(vKey), normPath, itemDisplayId, keySuffix);
 
         if (outVirtualPath && outVirtualPathSz)
         {
@@ -1938,6 +1818,30 @@ namespace wxl::scripts::equipextension
         std::vector<uint8_t> skinBytes;
         ReadGameFile(rSkin, skinBytes); // skin may be absent for some models; that is OK
 
+        // Geometric Y-mirror, if requested -- done BEFORE the geoset filter/texture patches below,
+        // on the raw bytes as read, so those subsequent steps operate on (mirrored) submesh/vertex
+        // layout that's otherwise byte-identical to the unmirrored case (mirroring never moves or
+        // resizes anything, only negates/reorders in place). Fails closed: if either step's own
+        // internal bounds/format checks reject the bytes, the whole bake aborts here rather than
+        // silently registering an unmirrored .m2 next to a rewound .skin (or vice versa) -- see
+        // MirrorModelBytes/MirrorSkinWinding's own doc comments in this file for exactly what each
+        // one touches.
+        if (mirrorAcrossY)
+        {
+            if (!MirrorModelBytes(vKey, mdxBytes))
+            {
+                VPathLog("  VPathPopulateGlobal: mirror FAILED (model) '%s' displayId=%u, "
+                         "aborting bake", normPath, itemDisplayId);
+                return false;
+            }
+            if (!skinBytes.empty() && !MirrorSkinWinding(vKey, skinBytes))
+            {
+                VPathLog("  VPathPopulateGlobal: mirror FAILED (skin winding) '%s' displayId=%u, "
+                         "aborting bake", normPath, itemDisplayId);
+                return false;
+            }
+        }
+
         // Same ApplySkinByteFilter used by VPathPopulate -- zeroes the raw index bytes of every
         // submesh whose sectionId isn't in geoIds, in place, before the bytes go in the table. A
         // no-op (returns immediately) when geoCount == 0 or skinBytes is empty/malformed.
@@ -1961,9 +1865,10 @@ namespace wxl::scripts::equipextension
         }
 
         VPathLog("  VPathPopulateGlobal: '%s' (displayId=%u) -> vkey='%s' mdx=%zu skin=%zu bytes "
-                 "(tex='%s' spec='%s' geoCount=%u)",
+                 "(tex='%s' spec='%s' geoCount=%u mirror=%d)",
                  normPath, itemDisplayId, vKey, mdxBytes.size(), skinBytes.size(),
-                 hasTexPath ? texPath : "", hasMatSpec ? materialPatchSpec : "", geoCount);
+                 hasTexPath ? texPath : "", hasMatSpec ? materialPatchSpec : "", geoCount,
+                 mirrorAcrossY ? 1 : 0);
 
         char vSkin[280];
         VirtualSkinPath(vSkin, sizeof(vSkin), vKey);

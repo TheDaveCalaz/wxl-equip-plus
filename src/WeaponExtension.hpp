@@ -72,12 +72,20 @@ namespace wxl::scripts::weaponextension
      *        own distinct virtual key, separate from the mainhand bake for the same displayId/
      *        column -- the two can never collide or overwrite each other.
      * @param column 0 = Model1OffhandPath, 1 = Model2OffhandPath.
+     * @param outAutoMirrored Optional. Set to true if this (displayId, column)'s row has
+     *        WXLWeaponModels.csv's NoAutoMirror/AutoMirror column set (WeaponModelPaths::
+     *        mirrorOffhand) -- meaning the bytes returned here were geometrically Y-mirrored
+     *        (VirtualPath.cpp's MirrorModelBytes/MirrorSkinWinding) before being baked and cached.
+     *        Set to false when the offhandPath model was baked and attached completely unmodified.
+     *        Left false (and untouched if this call returns false) whenever it can't be determined.
+     *        Callers that don't care can pass nullptr (the default).
      * @return true and fills out/outSz if a baked offhand virtual path exists for this
      *         (displayId, column); false (out left untouched) if this weapon has no offhand-specific
      *         model configured at all, in which case the caller should fall back to whatever
      *         ItemModelData.dbc's Model1/Model2 already names (the mainhand bake, unchanged).
      */
-    bool WeaponGetOffhandVirtualPath(uint32_t displayId, uint32_t column, char* out, size_t outSz);
+    bool WeaponGetOffhandVirtualPath(uint32_t displayId, uint32_t column, char* out, size_t outSz,
+                                      bool* outAutoMirrored = nullptr);
 
     /**
      * @brief Mainhand/ranged counterpart to WeaponGetOffhandVirtualPath -- looks up the already-

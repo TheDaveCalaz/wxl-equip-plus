@@ -137,6 +137,23 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
     // cmo (CharModelObject*) → attached M2 entries for that character
     static std::unordered_map<void*, std::vector<AttachEntry>> g_attached;
 
+    // ─── Offhand weapon render-time auto-mirror tracking ───────────────────────────
+    // See HandleOffhandWeaponOverride and ApplyOffhandAutoMirrorGuarded. renderCtx pointers here
+    // are weapon instances currently attached at the offhand point whose model bytes are the
+    // MAINHAND bake reused verbatim (WeaponGetOffhandVirtualPath's outAutoMirrored==true) -- they
+    // need every bone in their own palette mirrored across local X at render time, every frame,
+    // since OnBuildBonePalette re-derives the palette from scratch each time it fires.
+    //
+    // Keyed by subObj (the scene node the offhand weapon is attached under -- one per character/
+    // preview instance) rather than a flat set, so re-equipping always cleanly forgets exactly the
+    // two (column 0/1) renderCtx values this subObj had before, rather than leaking entries for
+    // pointers that may since have been freed and reused by an unrelated instance -- see
+    // HandleOffhandWeaponOverride's own update-in-place logic.
+    struct OffhandMirrorState { void* rctx[2] = { nullptr, nullptr }; };
+    static std::unordered_map<void*, OffhandMirrorState> g_offhandMirrorBySubObj;
+    // ApplyOffhandAutoMirrorGuarded itself is defined further down, after RenderCtxBoneCountGuarded/
+    // GuardedReadPtr exist -- see the comment there for how it works.
+
     static bool g_sidecarLoaded = false;
     static std::unordered_map<uint32_t, std::vector<SidecarModelEntry>> g_sidecarModels;
     static std::unordered_map<uint32_t, std::vector<SidecarMaterialEntry>> g_sidecarMaterials;
@@ -463,62 +480,39 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         return true;
     }
 
-    // Re-applies WXLHelmOffsets.csv's configured offset/scale directly to a Collections model's
-    // just-copied bone-palette matrices, for root-skinned attachments (see IsRootSkinnedEntry /
-    // NeedsManualBoneRemap). CopyRemappedBonesGuarded overwrites this model's own bone palette with
-    // the character skeleton's already-posed matrices every frame, so the synthetic bone track
-    // ApplyModelOffsetAndScale injects into the model's OWN .m2 bytes (VirtualPath.cpp) never gets
-    // evaluated for these -- this is the substitute application point. Must be called immediately
-    // after a successful CopyRemappedBonesGuarded, on the same (dstBuf, dstBoneCount) it just wrote.
-    //
-    // dstBuf entries are row-major 4x4 bone-to-world matrices (WxlOffsets.hpp: kBonePaletteStride =
-    // 0x40, 16 floats, row 3 = translation). Scale is applied by scaling the upper-left 3x3
-    // rotation/scale block in place -- this scales the bone's own local geometry contribution
-    // without moving its already-posed world position (row 3 untouched by the scale step).
-    // Offset is applied in the bone's own (pre-scale) local orientation -- transforming (x,y,z) by
-    // the bone's original rotation basis before adding it to the translation row -- mirroring the
-    // independent-track semantics ApplyModelOffsetAndScale uses on the .m2 side (translate and
-    // scale are applied as separate, non-multiplied contributions there too).
-    static void ApplyCsvOffsetScaleToBonePalette(uint8_t* dstBuf, uint32_t dstBoneCount,
-                                                 const char* keyBuf) noexcept
+    // Negates the first row (m00..m03) of every bone matrix in renderCtx's own freshly-built bone
+    // palette. For a row-vector, row-major 4x4 (v' = v * M -- this client's convention, matching
+    // every other raw matrix consumer in this file), left-multiplying M by diag(-1,1,1,1) negates
+    // exactly that one row, which is algebraically identical to mirroring the source vertex across
+    // local-space X BEFORE M is applied: v' = (v * diag(-1,1,1,1)) * M. Because it's a local-space
+    // mirror folded into the already-computed world matrices rather than a world-space one, the
+    // model's attach-point position/orientation are completely unaffected -- only its own shape
+    // flips, exactly like the old vertex/normal/winding mirror bake used to produce, but recomputed
+    // fresh from unmodified mainhand mesh bytes every single frame instead of needing a separate
+    // (and crash-prone) pre-mirrored copy of the model on disk. Reuses RenderCtxBoneCountGuarded's
+    // own model/header validation, so a stale renderCtx recycled for a smaller/unrelated model
+    // safely bails out (count 0) instead of writing past the live palette's real size.
+    static void ApplyOffhandAutoMirrorGuarded(void* renderCtx) noexcept
     {
-        if (!dstBuf || dstBoneCount == 0 || dstBoneCount > 65535 || !keyBuf || !keyBuf[0]) return;
-
-        float x, y, z, scale;
-        if (!VPathQueryModelOffsetAndScale(keyBuf, x, y, z, scale)) return;
-        const bool doScale  = (scale != 1.0f);
-        const bool doOffset = (x != 0.0f || y != 0.0f || z != 0.0f);
-        if (!doScale && !doOffset) return;
+        if (!renderCtx) return;
+        const uint32_t boneCount = RenderCtxBoneCountGuarded(renderCtx);
+        if (boneCount == 0) return;
+        auto* buf = reinterpret_cast<uint8_t*>(
+            GuardedReadPtr(reinterpret_cast<uint8_t*>(renderCtx) + offsets::kOffInstBonePalette));
+        if (!buf) return;
 
         __try
         {
-            for (uint32_t bi = 0; bi < dstBoneCount; ++bi)
+            for (uint32_t bi = 0; bi < boneCount; ++bi)
             {
-                float* m = reinterpret_cast<float*>(dstBuf + bi * offsets::kBonePaletteStride);
-
-                if (doOffset)
-                {
-                    // Transform the local-space offset by this bone's own (pre-scale) rotation
-                    // basis rows, then add it to the translation row.
-                    m[12] += x * m[0] + y * m[4] + z * m[8];
-                    m[13] += x * m[1] + y * m[5] + z * m[9];
-                    m[14] += x * m[2] + y * m[6] + z * m[10];
-                }
-                if (doScale)
-                {
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        m[c]     *= scale;
-                        m[4 + c] *= scale;
-                        m[8 + c] *= scale;
-                    }
-                }
+                auto* row0 = reinterpret_cast<float*>(buf + bi * offsets::kBonePaletteStride);
+                row0[0] = -row0[0];
+                row0[1] = -row0[1];
+                row0[2] = -row0[2];
+                row0[3] = -row0[3];
             }
         }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            EquipLog("  ApplyCsvOffsetScaleToBonePalette CRASH CAUGHT key='%s'", keyBuf);
-        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
     // SEH-only wrapper: no C++ objects in this function, __try is safe.
@@ -2075,11 +2069,17 @@ r.count = static_cast<uint16_t>(collN);
     //      -- a correctly pre-baked mirrored model, authored and supplied externally. Always wins
     //      when present (e.g. for a weapon whose hilt/engraving detail an automatic mirror gets
     //      visibly wrong).
-    //   2. Otherwise, WeaponExtension.cpp's BakeWeaponDisplayOffhand auto-mirrors the mainhand
-    //      model on the spot (VirtualPath.cpp's MirrorWeaponForOffhand: every vertex, normal,
-    //      triangle winding, bone pivot, and translation/rotation keyframe across every animation
-    //      sequence, plus attachment point offsets), so an offhand weapon is never left unmirrored
-    //      by default.
+    //   2. Otherwise (no explicit OffhandPath row for this displayId/column), WeaponExtension.cpp's
+    //      BakeWeaponDisplayOffhand reuses the mainhand bake's own virtual path VERBATIM and flags
+    //      it as auto-mirrored (WeaponGetOffhandVirtualPath's outAutoMirrored out-param, below). No
+    //      mesh bytes are rewritten for this case -- the mirror is applied at render time instead,
+    //      every frame, by negating each bone's local-space row in its own bone palette right after
+    //      the native BuildBonePalette call populates it (see ApplyOffhandAutoMirrorGuarded and
+    //      OnBuildBonePalette). This replaces an earlier approach that re-baked a fully mirrored
+    //      copy of the model's vertices/normals/winding/keyframes on the spot, which was crashing
+    //      on equip; the render-time transform touches none of that and can't reintroduce the same
+    //      crash surface, at the cost of only mirroring rigid geometry (any asymmetric detail like
+    //      off-center engraving mirrors along with the rest, same as the old approach did).
     // Either way, WeaponGetOffhandVirtualPath is the single entry point this function calls --
     // (WXLWeaponModels.csv's Model1OffhandPath/Model2OffhandPath/Geoset1Offhand/Geoset2Offhand).
     //
@@ -2098,13 +2098,30 @@ r.count = static_cast<uint16_t>(collN);
         if (!subObj || displayId == 0) return; // unequip: nothing to override, native detach handles it
 
         char vPath[2][280] = {};
-        const bool has0 = wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(displayId, 0, vPath[0], sizeof(vPath[0]));
-        const bool has1 = wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(displayId, 1, vPath[1], sizeof(vPath[1]));
+        bool mirror[2] = { false, false };
+        const bool has0 = wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(
+            displayId, 0, vPath[0], sizeof(vPath[0]), &mirror[0]);
+        const bool has1 = wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(
+            displayId, 1, vPath[1], sizeof(vPath[1]), &mirror[1]);
+
+        // Forget whatever this subObj's offhand point was previously flagged for -- both columns,
+        // unconditionally, every time this handler runs. Old renderCtx values may already be
+        // detached/freed by the time this executes again for a re-equip; leaving them tracked risks
+        // ApplyOffhandAutoMirrorGuarded later mirroring an unrelated instance that happens to get
+        // allocated at the same recycled address.
+        auto stateIt = g_offhandMirrorBySubObj.find(subObj);
+        if (stateIt != g_offhandMirrorBySubObj.end())
+        {
+            stateIt->second.rctx[0] = nullptr;
+            stateIt->second.rctx[1] = nullptr;
+        }
+
         if (!has0 && !has1) return; // no offhand-mirror configured for this weapon -- leave native
                                      // vanilla attach (the mainhand bake) exactly as it already is
 
-        EquipLog("  HandleOffhandWeaponOverride: displayId=%u col0='%s' col1='%s'",
-                 displayId, has0 ? vPath[0] : "(none)", has1 ? vPath[1] : "(none)");
+        EquipLog("  HandleOffhandWeaponOverride: displayId=%u col0='%s'(mirror=%d) col1='%s'(mirror=%d)",
+                 displayId, has0 ? vPath[0] : "(none)", mirror[0] ? 1 : 0,
+                 has1 ? vPath[1] : "(none)", mirror[1] ? 1 : 0);
 
         // hkSlotDispatch already ran vanilla first (same ordering as every other slot -- see the
         // comment above Phase1 in RebuildAllModels) and attached the WRONG (mainhand-baked) model
@@ -2125,7 +2142,18 @@ r.count = static_cast<uint16_t>(collN);
 
         if (rctx[0]) gm2::AttachToScene(rctx[0], subObj, kWeaponAttachOffHand, false);
         if (rctx[1]) gm2::AttachToScene(rctx[1], subObj, kWeaponAttachOffHand, false);
-        EquipLog("  HandleOffhandWeaponOverride: attached mirrored model(s) at offhand attach point");
+
+        // Re-flag for the (now freshly attached, or none) renderCtx values. mirror[i] is only ever
+        // true when rctx[i] is the mainhand bake reused verbatim (see WeaponGetOffhandVirtualPath's
+        // outAutoMirrored doc comment) -- an explicit/authored OffhandPath bake is already correct
+        // geometry and must NOT be flagged, or OnBuildBonePalette would mirror it a second time.
+        auto& state = g_offhandMirrorBySubObj[subObj];
+        state.rctx[0] = (rctx[0] && mirror[0]) ? rctx[0] : nullptr;
+        state.rctx[1] = (rctx[1] && mirror[1]) ? rctx[1] : nullptr;
+
+        EquipLog("  HandleOffhandWeaponOverride: attached model(s) at offhand attach point "
+                 "(runtime-mirror col0=%d col1=%d)",
+                 state.rctx[0] != nullptr, state.rctx[1] != nullptr);
     }
 
     void EquipExtension::OnItemSlotChange(const ev::ItemSlotChangeArgs& a)
@@ -2629,10 +2657,6 @@ r.count = static_cast<uint16_t>(collN);
                         entry.boneRemap = {};
                         entry.renderCtx = nullptr;
                     }
-                    else
-                    {
-                        ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, entry.keyBuf);
-                    }
                 }
             }
             return;
@@ -2799,10 +2823,6 @@ r.count = static_cast<uint16_t>(collN);
                             entry.boneRemap = {};
                             entry.renderCtx = nullptr;
                         }
-                        else
-                        {
-                            ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, entry.keyBuf);
-                        }
                     }
                 }
 
@@ -2891,10 +2911,6 @@ r.count = static_cast<uint16_t>(collN);
                                 entry.boneRemap = {};
                                 entry.renderCtx = nullptr;
                             }
-                            else
-                            {
-                                ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, entry.keyBuf);
-                            }
                         }
                     }
                 }
@@ -2978,7 +2994,26 @@ r.count = static_cast<uint16_t>(collN);
     // equip-slot events, but preserve the shared collection/character model pair, so handle those too.
     void EquipExtension::OnBuildBonePalette(const ev::BuildBonePaletteArgs& a)
     {
-        if (g_attached.empty() || !a.renderCtx) return;
+        if (!a.renderCtx) return;
+
+        // Offhand weapon render-time auto-mirror -- independent of, and runs regardless of, the
+        // armor bone-remap feature below (a bare weapon-only equip can hit this with g_attached
+        // completely empty). The native BuildBonePalette call has already run by the time this
+        // event fires (see BuildBonePaletteDetour), so a.renderCtx's palette is freshly populated
+        // and safe to mirror in place right now, every frame this instance renders.
+        if (!g_offhandMirrorBySubObj.empty())
+        {
+            for (auto& [subObj, state] : g_offhandMirrorBySubObj)
+            {
+                if (a.renderCtx == state.rctx[0] || a.renderCtx == state.rctx[1])
+                {
+                    ApplyOffhandAutoMirrorGuarded(a.renderCtx);
+                    break;
+                }
+            }
+        }
+
+        if (g_attached.empty()) return;
         void* renderCtx = a.renderCtx;
         void* childModel = GuardedReadPtr(
             reinterpret_cast<uint8_t*>(renderCtx) + offsets::kOffInstModel);
@@ -3079,10 +3114,6 @@ r.count = static_cast<uint16_t>(collN);
                         if (staleDestination) sibling.renderCtx = nullptr;
                     }
                 }
-                else
-                {
-                    ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, entry.keyBuf);
-                }
                 return; // renderCtx is unique per (keyBuf,attachId,texBuf) group; one copy suffices
             }
         }
@@ -3105,8 +3136,6 @@ r.count = static_cast<uint16_t>(collN);
                                       charBuf, charBoneCount, remap,
                                       renderCtx, clonePoseSource))
             return;
-
-        ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, cloneCandidate->keyBuf);
 
         if (!cloneCandidate->cloneBbpLogDone)
         {
