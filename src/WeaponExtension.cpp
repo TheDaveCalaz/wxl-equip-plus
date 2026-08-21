@@ -35,6 +35,7 @@
 // always a generic (path, id) -> baked-bytes mechanism, not anything armor-specific. Reused as-is via
 // their current namespace, same convention CreatureExtension.cpp already follows.
 using wxl::scripts::equipextension::VPathPopulateGlobal;
+using wxl::scripts::equipextension::VPathPopulateGlobalMirrored;
 using wxl::scripts::equipextension::VPathRegisterLazyResolver;
 using wxl::scripts::equipextension::VPathDecodeGlobalVirtualKey;
 using wxl::scripts::equipextension::WxlIniGetBool;
@@ -684,41 +685,97 @@ namespace wxl::scripts::weaponextension
     }
 
     // Offhand counterpart to BakeWeaponDisplay. Reads WeaponModelPaths::offhandPath /
-    // WeaponGeosetSpecs::offhandSpec instead of the mainhand columns. Auto-mirroring (generating a
-    // mirrored offhand model in-memory when WXLWeaponModels.csv gives no explicit
-    // Model1OffhandPath/Model2OffhandPath) has been removed -- it was crashing on equip. Only an
-    // explicit, author-supplied OffhandPath row is ever baked now; a displayId/column with no such
-    // row simply keeps whatever the native client already attaches at the offhand point.
-    // NoAutoMirror is therefore a no-op now (nothing left to suppress) but the column is left in
-    // WeaponModelPaths/the CSV parser for now in case auto-mirroring comes back later.
+    // WeaponGeosetSpecs::offhandSpec instead of the mainhand columns, when the sidecar gives an
+    // explicit, author-supplied OffhandPath row -- that always wins (a correctly hand-authored
+    // mirror beats an automatic one, e.g. for a weapon whose hilt/engraving detail an automatic
+    // mirror would get visibly wrong).
+    //
+    // Falls back to auto-mirroring the MAINHAND model (WeaponModelPaths::path[modelColumn], the
+    // same table BakeWeaponDisplay itself reads) when there's no explicit OffhandPath row, UNLESS
+    // NoAutoMirror is set for this displayId -- see WeaponModelPaths::noAutoMirror's own doc
+    // comment for why that matters: a shield's Model1Path already IS its offhand model, there's no
+    // "mainhand shield" to mirror FROM, and mirroring its emblem/heraldry would just render it
+    // backwards for no reason. A displayId/column with NoAutoMirror set and no explicit OffhandPath
+    // therefore bakes nothing here at all -- CharAddHandItemDetour's own fallback to
+    // WeaponGetVirtualPath (EquipExtension.cpp) is what applies the mainhand bake UNMIRRORED to
+    // such an offhand slot instead.
     //
     // No longer uses VPathPopulateGlobalSharedKey: that mechanism existed only because, on the old
     // dbc-patch-only path, native code resolved BOTH hands from the SAME static ItemModelData.dbc
     // field, so a distinctly-keyed offhand bake was never actually read -- the offhand bytes had to
     // squat on the mainhand's own key. CharAddHandItemDetour (EquipExtension.cpp) now overrides
     // Model1 independently per hand at the runtime attach point instead, so that constraint is
-    // gone: offhand bakes under its OWN virtual key here (derived from offhandPath itself, via a
-    // plain VPathPopulateGlobal call), genuinely distinct from whatever mainhand's key is. This
-    // also means mainhand and offhand can safely be baked/evicted/rebaked independently, with
-    // neither able to silently clobber the other's registered bytes.
+    // gone: offhand bakes under its OWN virtual key here (derived from offhandPath itself, or from
+    // the mainhand path for an auto-mirrored bake -- see VPathPopulateGlobalMirrored's own doc
+    // comment for why that never collides with the plain mainhand bake of the same source file),
+    // genuinely distinct from whatever mainhand's key is. This also means mainhand and offhand can
+    // safely be baked/evicted/rebaked independently, with neither able to silently clobber the
+    // other's registered bytes.
     static bool BakeWeaponDisplayOffhand(uint32_t displayId, uint32_t modelColumn)
     {
         auto pathIt = g_sidecarWeaponModelPath.find(displayId);
         if (pathIt == g_sidecarWeaponModelPath.end()) return false;
         if (modelColumn > 1) return false;
 
-        if (pathIt->second.offhandPath[modelColumn].empty())
-        {
-            WeaponLog("  bake(offhand): display=%u column=%u no explicit OffhandPath -- "
-                      "auto-mirror removed, leaving native attach as-is", displayId, modelColumn);
-            return false;
-        }
-
         char matSpec[2048] = {};
         BuildWeaponMaterialPatchSpec(matSpec, sizeof(matSpec), displayId, modelColumn);
 
-        const WeaponGeosetSpec* geoSpec = nullptr;
         auto geoIt = g_sidecarWeaponGeoset.find(displayId);
+
+        if (pathIt->second.offhandPath[modelColumn].empty())
+        {
+            if (pathIt->second.noAutoMirror)
+            {
+                WeaponLog("  bake(offhand): display=%u column=%u no explicit OffhandPath, "
+                          "NoAutoMirror set -- leaving native attach as-is (see "
+                          "WeaponGetVirtualPath fallback in CharAddHandItemDetour)",
+                          displayId, modelColumn);
+                return false;
+            }
+
+            const std::string& mainhandSrc = pathIt->second.path[modelColumn];
+            if (mainhandSrc.empty())
+            {
+                WeaponLog("  bake(offhand): display=%u column=%u no explicit OffhandPath and no "
+                          "mainhand model to auto-mirror from -- leaving native attach as-is",
+                          displayId, modelColumn);
+                return false;
+            }
+
+            // Prefer an offhand-specific geoset filter if the sidecar gave one (Geoset1Offhand/
+            // Geoset2Offhand can be set independently of Model1OffhandPath/Model2OffhandPath); fall
+            // back to the mainhand column's own filter otherwise, since the mirrored geometry is
+            // literally the same source mesh.
+            const WeaponGeosetSpec* geoSpec = nullptr;
+            if (geoIt != g_sidecarWeaponGeoset.end())
+            {
+                if (geoIt->second.offhandSpec[modelColumn].count > 0)
+                    geoSpec = &geoIt->second.offhandSpec[modelColumn];
+                else if (geoIt->second.spec[modelColumn].count > 0)
+                    geoSpec = &geoIt->second.spec[modelColumn];
+            }
+
+            char vModelPath[280] = {};
+            bool registered = VPathPopulateGlobalMirrored(mainhandSrc.c_str(), displayId, matSpec,
+                                                           geoSpec ? geoSpec->ids : nullptr,
+                                                           geoSpec ? geoSpec->count : 0,
+                                                           true, // evictable
+                                                           vModelPath, sizeof(vModelPath),
+                                                           "Weapon");
+            WeaponLog("  bake(offhand,auto-mirror): display=%u column=%u real='%s' vpath='%s' "
+                      "spec='%s' geoCount=%u registered=%d",
+                      displayId, modelColumn, mainhandSrc.c_str(), vModelPath, matSpec,
+                      geoSpec ? geoSpec->count : 0u, registered ? 1 : 0);
+
+            if (registered && vModelPath[0])
+            {
+                g_offhandVirtualPath[OffhandCacheKey(displayId, modelColumn)] = vModelPath;
+                return true;
+            }
+            return false;
+        }
+
+        const WeaponGeosetSpec* geoSpec = nullptr;
         if (geoIt != g_sidecarWeaponGeoset.end() && geoIt->second.offhandSpec[modelColumn].count > 0)
             geoSpec = &geoIt->second.offhandSpec[modelColumn];
 

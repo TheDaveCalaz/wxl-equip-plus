@@ -463,6 +463,64 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         return true;
     }
 
+    // Re-applies WXLHelmOffsets.csv's configured offset/scale directly to a Collections model's
+    // just-copied bone-palette matrices, for root-skinned attachments (see IsRootSkinnedEntry /
+    // NeedsManualBoneRemap). CopyRemappedBonesGuarded overwrites this model's own bone palette with
+    // the character skeleton's already-posed matrices every frame, so the synthetic bone track
+    // ApplyModelOffsetAndScale injects into the model's OWN .m2 bytes (VirtualPath.cpp) never gets
+    // evaluated for these -- this is the substitute application point. Must be called immediately
+    // after a successful CopyRemappedBonesGuarded, on the same (dstBuf, dstBoneCount) it just wrote.
+    //
+    // dstBuf entries are row-major 4x4 bone-to-world matrices (WxlOffsets.hpp: kBonePaletteStride =
+    // 0x40, 16 floats, row 3 = translation). Scale is applied by scaling the upper-left 3x3
+    // rotation/scale block in place -- this scales the bone's own local geometry contribution
+    // without moving its already-posed world position (row 3 untouched by the scale step).
+    // Offset is applied in the bone's own (pre-scale) local orientation -- transforming (x,y,z) by
+    // the bone's original rotation basis before adding it to the translation row -- mirroring the
+    // independent-track semantics ApplyModelOffsetAndScale uses on the .m2 side (translate and
+    // scale are applied as separate, non-multiplied contributions there too).
+    static void ApplyCsvOffsetScaleToBonePalette(uint8_t* dstBuf, uint32_t dstBoneCount,
+                                                 const char* keyBuf) noexcept
+    {
+        if (!dstBuf || dstBoneCount == 0 || dstBoneCount > 65535 || !keyBuf || !keyBuf[0]) return;
+
+        float x, y, z, scale;
+        if (!VPathQueryModelOffsetAndScale(keyBuf, x, y, z, scale)) return;
+        const bool doScale  = (scale != 1.0f);
+        const bool doOffset = (x != 0.0f || y != 0.0f || z != 0.0f);
+        if (!doScale && !doOffset) return;
+
+        __try
+        {
+            for (uint32_t bi = 0; bi < dstBoneCount; ++bi)
+            {
+                float* m = reinterpret_cast<float*>(dstBuf + bi * offsets::kBonePaletteStride);
+
+                if (doOffset)
+                {
+                    // Transform the local-space offset by this bone's own (pre-scale) rotation
+                    // basis rows, then add it to the translation row.
+                    m[12] += x * m[0] + y * m[4] + z * m[8];
+                    m[13] += x * m[1] + y * m[5] + z * m[9];
+                    m[14] += x * m[2] + y * m[6] + z * m[10];
+                }
+                if (doScale)
+                {
+                    for (int c = 0; c < 3; ++c)
+                    {
+                        m[c]     *= scale;
+                        m[4 + c] *= scale;
+                        m[8 + c] *= scale;
+                    }
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            EquipLog("  ApplyCsvOffsetScaleToBonePalette CRASH CAUGHT key='%s'", keyBuf);
+        }
+    }
+
     // SEH-only wrapper: no C++ objects in this function, __try is safe.
     // Catches access violations from garbage/dangling hash-table buckets — see RebuildAllModels.
     // owner28 = *(subObj + kOffSceneNodeOwner): the actual CharModelObject that owns the
@@ -2571,6 +2629,10 @@ r.count = static_cast<uint16_t>(collN);
                         entry.boneRemap = {};
                         entry.renderCtx = nullptr;
                     }
+                    else
+                    {
+                        ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, entry.keyBuf);
+                    }
                 }
             }
             return;
@@ -2737,6 +2799,10 @@ r.count = static_cast<uint16_t>(collN);
                             entry.boneRemap = {};
                             entry.renderCtx = nullptr;
                         }
+                        else
+                        {
+                            ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, entry.keyBuf);
+                        }
                     }
                 }
 
@@ -2824,6 +2890,10 @@ r.count = static_cast<uint16_t>(collN);
                                          entry.renderCtx, (uint32_t)remap.count);
                                 entry.boneRemap = {};
                                 entry.renderCtx = nullptr;
+                            }
+                            else
+                            {
+                                ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, entry.keyBuf);
                             }
                         }
                     }
@@ -3009,6 +3079,10 @@ r.count = static_cast<uint16_t>(collN);
                         if (staleDestination) sibling.renderCtx = nullptr;
                     }
                 }
+                else
+                {
+                    ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, entry.keyBuf);
+                }
                 return; // renderCtx is unique per (keyBuf,attachId,texBuf) group; one copy suffices
             }
         }
@@ -3031,6 +3105,8 @@ r.count = static_cast<uint16_t>(collN);
                                       charBuf, charBoneCount, remap,
                                       renderCtx, clonePoseSource))
             return;
+
+        ApplyCsvOffsetScaleToBonePalette(collBuf, collBoneCount, cloneCandidate->keyBuf);
 
         if (!cloneCandidate->cloneBbpLogDone)
         {

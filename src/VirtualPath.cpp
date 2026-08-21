@@ -1309,13 +1309,20 @@ namespace wxl::scripts::equipextension
 
     // Public entry point: called from VPathPopulate right after the real .m2 bytes are read. name
     // is the real (pre-normalization) DBC-style path, e.g. 'Item\ObjectComponents\Head\foo_Be_F.mdx'.
-    // No-op (returns without modifying model) if nothing in WXLHelmOffsets.csv applies and the
-    // model's own filename doesn't parse as a per-race helm suffix -- i.e. touching zero bytes and
-    // zero bone flags for every model that was never meant to be offset/scaled at all.
-    static void ApplyModelOffsetAndScale(const char* name, std::vector<uint8_t>& model)
+    // Shared resolution core: finds the best-matching WXLHelmOffsets.csv row for 'name' (same
+    // precedence ModelRuleScore has always used) and resolves it to a final (x,y,z,scale). Used by
+    // both ApplyModelOffsetAndScale (bone-track injection, for models whose own bone hierarchy is
+    // actually evaluated) and VPathQueryModelOffsetAndScale (bone-palette post-copy path, for
+    // root-skinned Collections attachments where the injected track is otherwise never evaluated --
+    // see EquipExtension.cpp's OnBuildBonePalette). Returns false (out params left at neutral
+    // defaults) if no row matches, the row disables itself, or it resolves to a no-op.
+    static bool ResolveModelOffsetAndScale(const char* name, float& x, float& y, float& z,
+                                           float& scale, bool& haveOffset, bool& haveScale)
     {
+        x = y = z = 0.0f; scale = 1.0f; haveOffset = false; haveScale = false;
+
         LoadModelOffsets();
-        if (g_modelOffsetRules.empty()) return;
+        if (g_modelOffsetRules.empty()) return false;
 
         char id[8] = {};
         const bool hasRaceId = ModelRaceId(name, id, sizeof(id));
@@ -1335,11 +1342,8 @@ namespace wxl::scripts::equipextension
                                              hasRaceId ? id : "");
             if (score > bestScore) { best = &rule; bestScore = score; }
         }
-        if (!best) return;               // no CSV row at all for this model: do nothing (opt-in)
-        if (best->disable) return;        // explicit disable: do nothing
-
-        float x = 0.0f, y = 0.0f, z = 0.0f, scale = 1.0f;
-        bool haveOffset = false, haveScale = false;
+        if (!best) return false;          // no CSV row at all for this model: do nothing (opt-in)
+        if (best->disable) return false;  // explicit disable: do nothing
 
         if (best->isHelm && hasRaceId)
         {
@@ -1362,7 +1366,16 @@ namespace wxl::scripts::equipextension
         }
         if (best->hasScale) { scale = best->scale; haveScale = true; }
 
-        if (!haveOffset && !haveScale) return;
+        return haveOffset || haveScale;
+    }
+
+    // No-op (returns without modifying model) if nothing in WXLHelmOffsets.csv applies and the
+    // model's own filename doesn't parse as a per-race helm suffix -- i.e. touching zero bytes and
+    // zero bone flags for every model that was never meant to be offset/scaled at all.
+    static void ApplyModelOffsetAndScale(const char* name, std::vector<uint8_t>& model)
+    {
+        float x, y, z, scale; bool haveOffset, haveScale;
+        if (!ResolveModelOffsetAndScale(name, x, y, z, scale, haveOffset, haveScale)) return;
         InjectModelOffsetAndScale(name, model, haveOffset, x, y, z, haveScale, scale);
     }
 
@@ -1492,6 +1505,9 @@ namespace wxl::scripts::equipextension
         auto* md = reinterpret_cast<fmt::M2Header*>(model.data());
         if (md->magic != fmt::kMagicMD20) return false;
 
+        float dbgMinXBefore = 0.0f, dbgMaxXBefore = 0.0f, dbgMinXAfter = 0.0f, dbgMaxXAfter = 0.0f;
+        uint32_t dbgVerticesOffset = md->vertices.offset;
+
         __try
         {
             // Vertices
@@ -1501,10 +1517,25 @@ namespace wxl::scripts::equipextension
                                       uint64_t(md->vertices.count) * sizeof(M2VertexRaw);
                 if (end > model.size()) return false;
                 auto* v = reinterpret_cast<M2VertexRaw*>(model.data() + md->vertices.offset);
+
+                dbgMinXBefore = dbgMaxXBefore = v[0].position[0];
+                for (uint32_t i = 1; i < md->vertices.count; ++i)
+                {
+                    if (v[i].position[0] < dbgMinXBefore) dbgMinXBefore = v[i].position[0];
+                    if (v[i].position[0] > dbgMaxXBefore) dbgMaxXBefore = v[i].position[0];
+                }
+
                 for (uint32_t i = 0; i < md->vertices.count; ++i)
                 {
                     v[i].position[0] = -v[i].position[0];
                     v[i].normal[0]   = -v[i].normal[0];
+                }
+
+                dbgMinXAfter = dbgMaxXAfter = v[0].position[0];
+                for (uint32_t i = 1; i < md->vertices.count; ++i)
+                {
+                    if (v[i].position[0] < dbgMinXAfter) dbgMinXAfter = v[i].position[0];
+                    if (v[i].position[0] > dbgMaxXAfter) dbgMaxXAfter = v[i].position[0];
                 }
             }
 
@@ -1578,8 +1609,10 @@ namespace wxl::scripts::equipextension
             return false;
         }
 
-        VPathLog("  MirrorModelBytes: '%s' vertices=%u bones=%u attachments=%u", name ? name : "?",
-                 md->vertices.count, md->bones.count, md->attachments.count);
+        VPathLog("  MirrorModelBytes: '%s' vertices=%u bones=%u attachments=%u ofsVertices=0x%X "
+                 "X range before=[%.4f,%.4f] after=[%.4f,%.4f]", name ? name : "?",
+                 md->vertices.count, md->bones.count, md->attachments.count, dbgVerticesOffset,
+                 dbgMinXBefore, dbgMaxXBefore, dbgMinXAfter, dbgMaxXAfter);
         return true;
     }
 
@@ -1613,14 +1646,130 @@ namespace wxl::scripts::equipextension
         return true;
     }
 
-    // MirrorWeaponForOffhand / VPathPopulateGlobalMirrored (auto-mirror offhand bake) removed --
-    // this client's own axis-mirror transform was crashing on equip, and the feature is no longer
-    // used: WeaponGetOffhandVirtualPath now only ever bakes an offhand model when
-    // WXLWeaponModels.csv gives it an explicit Model1OffhandPath/Model2OffhandPath (see
-    // BakeWeaponDisplayOffhand in WeaponExtension.cpp). The low-level MirrorModelBytes/
-    // MirrorSkinWinding routines above are no longer called by anything and are left in place
-    // only because other math in this file may still reference their neighbors; say the word if
-    // you want those stripped out too.
+    // Builds the mirrored-bake virtual key: BuildGlobalVirtualKey's own "<stem>_<id><ext>" shape
+    // with an extra "_oh" tag inserted before the extension -- "<stem>_<id>_oh<ext>" -- so a
+    // mirrored offhand bake of realMdxPath NEVER collides with the ordinary (unmirrored) mainhand
+    // bake VPathPopulateGlobal/BakeWeaponDisplay registers for the exact same (realMdxPath,
+    // itemDisplayId) pair. Deliberately NOT decodable by VPathDecodeGlobalVirtualKey (the "_oh"
+    // breaks its trailing-digit-run scan) -- WeaponLazyResolve only ever needs to rebake mainhand
+    // entries on a VirtualProvide miss (see its own doc comment); a mirrored offhand entry is
+    // rebaked by WeaponGetOffhandVirtualPath itself instead, called fresh on every equip event, the
+    // same way the explicit-OffhandPath case already worked before this function existed.
+    static void BuildMirroredVirtualKey(char* out, size_t outSz, const char* normPath,
+                                        uint32_t itemDisplayId) noexcept
+    {
+        char base[280];
+        BuildGlobalVirtualKey(base, sizeof(base), normPath, itemDisplayId);
+
+        if (!out || outSz == 0) return;
+        char* lastDot = nullptr;
+        for (char* p = base; *p; ++p) if (*p == '.') lastDot = p;
+
+        char* q   = out;
+        char* end = out + outSz - 1;
+        const char* stemEnd = lastDot ? lastDot : (base + std::strlen(base));
+        for (const char* p = base; p < stemEnd && q < end; ) *q++ = *p++;
+        for (const char* p = "_oh"; *p && q < end; ) *q++ = *p++;
+        for (const char* p = (lastDot ? lastDot : ".m2"); *p && q < end; ) *q++ = *p++;
+        *q = '\0';
+    }
+
+    bool VPathPopulateGlobalMirrored(const char* realMdxPath, uint32_t itemDisplayId,
+                                     const char* materialPatchSpec,
+                                     const uint16_t* geoIds, uint32_t geoCount,
+                                     bool evictable,
+                                     char* outVirtualPath, size_t outVirtualPathSz,
+                                     const char* evictionPool)
+    {
+        if (!realMdxPath || !*realMdxPath) return false;
+        const bool hasMatSpec   = materialPatchSpec && *materialPatchSpec;
+        const bool hasGeoFilter = geoIds && geoCount > 0;
+
+        char normPath[264];
+        NormalizeRealPath(normPath, sizeof(normPath), realMdxPath);
+
+        char vKey[280];
+        BuildMirroredVirtualKey(vKey, sizeof(vKey), normPath, itemDisplayId);
+
+        if (outVirtualPath && outVirtualPathSz)
+        {
+            size_t n = std::strlen(vKey);
+            if (n >= outVirtualPathSz) n = outVirtualPathSz - 1;
+            std::memcpy(outVirtualPath, vKey, n);
+            outVirtualPath[n] = '\0';
+        }
+
+        // First mirrored bake for this (realMdxPath, itemDisplayId) wins for the rest of the
+        // session, same "first bake wins" convention as VPathPopulateGlobal -- this is also what
+        // makes a redundant re-call from WeaponGetOffhandVirtualPath on every equip a cheap no-op
+        // once the mirror has actually been baked.
+        if (g_globalOverrides.count(vKey)) return true;
+
+        std::vector<uint8_t> mdxBytes;
+        if (!ReadGameFile(normPath, mdxBytes))
+        {
+            VPathLog("  VPathPopulateGlobalMirrored: mdx READ FAILED '%s'", normPath);
+            return false;
+        }
+
+        char rSkin[264];
+        RealSkinPath(rSkin, sizeof(rSkin), normPath);
+        std::vector<uint8_t> skinBytes;
+        const bool hadSkinFile = ReadGameFile(rSkin, skinBytes); // absent skin is OK, just no winding fix
+
+        if (hasGeoFilter)
+            ApplySkinByteFilter(skinBytes, geoIds, geoCount);
+        if (hasMatSpec)
+            PatchTargetedMaterialTextures(mdxBytes, materialPatchSpec);
+
+        // Fail closed: a mirror that can't be verified geometrically correct is worse than none --
+        // the caller's existing Model1 (unmirrored, backwards in the offhand) at least renders
+        // without crashing.
+        if (!MirrorModelBytes(normPath, mdxBytes))
+        {
+            VPathLog("  VPathPopulateGlobalMirrored: MirrorModelBytes FAILED '%s' -- bake aborted",
+                     normPath);
+            return false;
+        }
+        if (hadSkinFile && !skinBytes.empty())
+        {
+            if (!MirrorSkinWinding(normPath, skinBytes))
+            {
+                VPathLog("  VPathPopulateGlobalMirrored: MirrorSkinWinding FAILED '%s' -- bake "
+                         "aborted", normPath);
+                return false;
+            }
+        }
+
+        VPathLog("  VPathPopulateGlobalMirrored: '%s' (displayId=%u) -> vkey='%s' mdx=%zu skin=%zu "
+                 "bytes (spec='%s' geoCount=%u)", normPath, itemDisplayId, vKey, mdxBytes.size(),
+                 skinBytes.size(), hasMatSpec ? materialPatchSpec : "", geoCount);
+
+        char vSkin[280];
+        VirtualSkinPath(vSkin, sizeof(vSkin), vKey);
+
+        const bool hasSkin = !skinBytes.empty();
+        g_globalOverrides.emplace(vKey, std::move(mdxBytes));
+        if (hasSkin)
+            g_globalOverrides.emplace(vSkin, std::move(skinBytes));
+
+        if (evictable)
+        {
+            const std::string pool = (evictionPool && *evictionPool) ? evictionPool : "Weapon";
+            RegisterEvictableGroup(pool, vKey, vSkin, hasSkin);
+        }
+
+        return true;
+    }
+
+    bool VPathQueryModelOffsetAndScale(const char* name, float& outX, float& outY, float& outZ,
+                                       float& outScale)
+    {
+        outX = outY = outZ = 0.0f; outScale = 1.0f;
+        if (!name || !*name) return false;
+        bool haveOffset = false, haveScale = false;
+        return ResolveModelOffsetAndScale(name, outX, outY, outZ, outScale, haveOffset, haveScale);
+    }
 
     // ─── Public API ───────────────────────────────────────────────────────────
 
