@@ -3213,21 +3213,35 @@ r.count = static_cast<uint16_t>(collN);
     // notes): fires once per hand immediately before CharAddHandItem, with this call's outBuf being
     // the exact same pointer CharAddHandItem receives as its a1.
     //
-    // TWO distinct sites are known, not one: 0x006DC800 is the in-world equip path (the original
-    // investigation); 0x004E3F90 is a SEPARATE dispatch site the char-select/glue-scene preview
-    // character resolves weapons through instead -- confirmed from a char-select capture showing
-    // the identical outBuf/a1 pointer-identity relationship, just reached via that other retAddr.
-    // Both call sites carry the exact same (displayId in, resolved-record out) contract as far as
-    // this stash cares, so both are accepted; without 0x004E3F90 here, char-select's dispatch calls
-    // never get stashed, CharAddHandItemDetour always misses for them, and the char-select preview
-    // silently keeps whatever Model1 the native lookup resolved (the mainhand model, for both
-    // hands) instead of ever reaching the offhand override.
+    // FOUR distinct sites are known, not three: 0x006DC800 is the in-world equip path (the
+    // original investigation); 0x004E3F90 is a SEPARATE dispatch site the char-select/glue-scene
+    // preview character resolves weapons through instead -- confirmed from a char-select capture
+    // showing the identical outBuf/a1 pointer-identity relationship, just reached via that other
+    // retAddr. 0x004E106F is a THIRD dispatch site: the full equipped-set rebuild path used by the
+    // char-select customization tools (race/gender/faction change), which walk every equipped
+    // slot -- weapons included -- through this retAddr instead of either of the other two.
+    //
+    // 0x0059871C is a FOURTH dispatch site: the paperdoll frame's own item-preview refresh.
+    // Confirmed from a paperdoll capture: every weapon-slot CharAddHandItem call that missed the
+    // stash was fed by an ItemDisplayInfoLookup carrying this retAddr. Note this call is
+    // immediately preceded, same displayId, by a DIFFERENT ItemDisplayInfoLookup at 0x00759077
+    // (the already-excluded sheathe-visual resolve site) into its own separate outBuf -- that one
+    // is a red herring, a genuinely separate non-dispatch resolve; it's the 0x0059871C call right
+    // after it, into a fresh outBuf, whose outBuf is the one actually reused as CharAddHandItem's
+    // a1 for the paperdoll path.
+    //
+    // All four call sites carry the exact same (displayId in, resolved-record out) contract as
+    // far as this stash cares, so all four are accepted; omitting any one of them means that
+    // scene's dispatch calls never get stashed, CharAddHandItemDetour always misses for them, and
+    // that scene silently keeps whatever Model1 the native lookup resolved (the un-baked base
+    // model) instead of ever reaching the mainhand/offhand override.
     //
     // The two known non-dispatch sites (0x00759077 sheathe-visual resolve, 0x0059800B paperdoll
     // polling) are still deliberately NOT stashed, so they can never be mistaken for a dispatch
-    // call downstream. If a THIRD scene (e.g. some other preview/mirror path) turns out to reach
+    // call downstream. If a FIFTH scene (e.g. some other preview/mirror path) turns out to reach
     // CharAddHandItem through yet another retAddr, the fix is the same shape: add it here.
-    constexpr uintptr_t kWeaponDispatchRetAddrs[] = { 0x006DC800, 0x004E3F90 };
+    constexpr uintptr_t kWeaponDispatchRetAddrs[] =
+        { 0x006DC800, 0x004E3F90, 0x004E106F, 0x0059871C };
 
     bool IsWeaponDispatchRetAddr(void* returnAddr) noexcept
     {
