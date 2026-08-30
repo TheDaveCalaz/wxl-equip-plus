@@ -187,6 +187,16 @@ Applies model-specific material offsets for Helm models and other collections mo
 This CSV is used to apply scale and offset modifications to helm models and to collection models.
 The Extension will apply the helm offset corrections if the root of the helm model is specified in this .CSV
 
+### `WXLEquipAnimations.csv`
+
+Introduced a system to synch items animations to character's animations, if the ItemDisplayId is not present, animations synch is ignored by default.
+
+| Column | Meaning |
+|--------|---------|
+| `ItemDisplayID` | DisplayID of the items you want to have animations synch. |
+| `Animations` | 1 for activating animations, 0 for ignoring. |
+
+
 ### `WXLWeaponModels.csv`
 
 Sidecar used to declare weapon models to bake and their geosets

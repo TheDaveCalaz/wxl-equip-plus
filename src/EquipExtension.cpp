@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <cctype>
 #include <array>
 #include <string>
 #include <unordered_map>
@@ -79,6 +80,7 @@ namespace wxl::scripts::equipextension
         Native<goff::M2_SetBoneSequenceFn>(goff::kSetBoneSequence)(
             instance, nullptr, slot, seqId, prevSeqId, prevSubSeqId, blendTime, loop, primary);
     }
+
 
     // ─── Data types ──────────────────────────────────────────────────────────────
 
@@ -140,6 +142,8 @@ namespace wxl::scripts::equipextension
         GeosetFilter geoFilter  = {};
         BoneRemap    boneRemap  = {};
         uint32_t    mergeKey = 0; // non-zero keeps logical semicolon collection models separate
+        uint32_t    displayId = 0; // ItemDisplayInfo id this entry was built from -- used to key
+                                    // WXLEquipAnimations.csv's opt-in animation-sync lookup.
         bool        perFrameLogged    = false; // suppress repeated per-frame noise after first log
         bool        charSweepApplied = false; // set when character-model PerFrame sweep first copies bones
         bool        bbpLogDone       = false; // suppress OnBuildBonePalette remap dump after first fire
@@ -323,6 +327,96 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         va_end(ap);
         std::fputc('\n', f);
         std::fclose(f);
+    }
+
+    // ─── WXLEquipAnimations.csv: opt-in animation sync per item display id ─────────────
+    //
+    // Format: two columns, "ItemDisplayID,Animations" header expected (though the header row
+    // isn't actually validated by name -- ANY line whose first field doesn't start with a digit
+    // is treated as a header/comment and skipped, so the exact header text isn't load-bearing).
+    // One data row per line after that: "<displayId>,<0 or 1>".
+    // 1 = sync this display id's collection/shoulder/waist/head model to the character's current
+    // sequence (see SyncCollectionSequence). 0 = explicitly never sync it. Any display id with NO
+    // row at all defaults to 0 (never sync) -- this is opt-in, not opt-out, so shipping the DLL
+    // with no CSV present changes nothing versus before this feature existed.
+    static bool                          g_equipAnimCsvLoaded = false;
+    static std::unordered_map<uint32_t, bool> g_equipAnimEnabled;
+
+    static void LoadEquipAnimationsText(const std::string& text)
+    {
+        size_t pos = 0;
+        uint32_t loaded = 0;
+        while (pos < text.size())
+        {
+            const size_t nl = text.find_first_of("\r\n", pos);
+            std::string line = text.substr(pos, (nl == std::string::npos ? text.size() : nl) - pos);
+            pos = (nl == std::string::npos) ? text.size() : nl + 1;
+            if (line.empty()) continue;
+
+            const size_t comma = line.find(',');
+            if (comma == std::string::npos) continue;
+
+            std::string idField  = line.substr(0, comma);
+            std::string valField = line.substr(comma + 1);
+            // tolerate a trailing comment/extra column and surrounding whitespace
+            if (const size_t c2 = valField.find(','); c2 != std::string::npos) valField = valField.substr(0, c2);
+            auto trim = [](std::string& s) {
+                size_t a = s.find_first_not_of(" \t");
+                size_t b = s.find_last_not_of(" \t");
+                s = (a == std::string::npos) ? std::string() : s.substr(a, b - a + 1);
+            };
+            trim(idField);
+            trim(valField);
+            if (idField.empty() || valField.empty()) continue;
+            // skip an optional header row ("displayId,enabled" or similar, non-numeric first field)
+            if (!std::isdigit(static_cast<unsigned char>(idField[0]))) continue;
+
+            char* end = nullptr;
+            const unsigned long displayId = std::strtoul(idField.c_str(), &end, 10);
+            if (end == idField.c_str()) continue;
+            const bool enabled = (valField[0] == '1');
+
+            g_equipAnimEnabled[static_cast<uint32_t>(displayId)] = enabled;
+            ++loaded;
+        }
+        if (loaded) EquipLog("  WXLEquipAnimations loaded rows=%u", loaded);
+    }
+
+    static void LoadEquipAnimations()
+    {
+        if (g_equipAnimCsvLoaded) return;
+        g_equipAnimCsvLoaded = true;
+
+        void* handle = nullptr;
+        if (!wxl::game::io::FileOpen("DBFilesClient\\WXLEquipAnimations.csv",
+                                      wxl::game::io::kOpenWholeFile, &handle) || !handle)
+        {
+            EquipLog("  WXLEquipAnimations: no CSV present, animation sync stays off for all items");
+            return;
+        }
+        uint32_t sizeHigh = 0;
+        const uint32_t size = wxl::game::io::FileSize(handle, &sizeHigh);
+        std::string text;
+        if (size > 0 && sizeHigh == 0)
+        {
+            text.resize(size);
+            uint32_t got = 0;
+            wxl::game::io::FileRead(handle, text.data(), size, &got);
+            if (got != size) text.clear();
+        }
+        wxl::game::io::FileClose(handle);
+
+        if (!text.empty()) LoadEquipAnimationsText(text);
+        EquipLog("  WXLEquipAnimations ready rows=%zu", g_equipAnimEnabled.size());
+    }
+
+    // True only for a displayId with an explicit "1" row in WXLEquipAnimations.csv. Missing from
+    // the table, a "0" row, or the CSV missing entirely all resolve to false -- opt-in by design.
+    static bool IsAnimSyncEnabledForDisplayId(uint32_t displayId)
+    {
+        LoadEquipAnimations();
+        const auto it = g_equipAnimEnabled.find(displayId);
+        return it != g_equipAnimEnabled.end() && it->second;
     }
 
     static bool SameAttachModelGroup(const AttachEntry& a, const AttachEntry& b) noexcept
@@ -1323,17 +1417,28 @@ r.count = static_cast<uint16_t>(collN);
         // Deliberately excludes weapons (kWeaponAttachOffHand and the mainhand path): those already
         // have their own sheathe/held-pose handling in WeaponExtension.cpp and are out of scope for
         // this sync.
-        if (IsRootSkinnedEntry(e)) return true;
-        switch (e.attachId)
+        //
+        // Shape eligibility alone is NOT enough, though -- WXLEquipAnimations.csv gates the actual
+        // per-displayId opt-in below. A displayId with no "1" row in that CSV (including simply
+        // having no row at all, which is the default with no CSV shipped) returns false here even
+        // if it's otherwise a Collections/shoulder/waist/head entry. This was added after enabling
+        // the sync unconditionally for every eligible entry turned out to cause a regression on
+        // some content; opt-in per item keeps it scoped to models actually verified to want it.
+        bool shapeEligible = false;
+        if (IsRootSkinnedEntry(e)) shapeEligible = true;
+        else switch (e.attachId)
         {
             case kShoulderAttachA:
             case kShoulderAttachB:
             case kWaistAttach:
             case kHeadAttach:
-                return true;
+                shapeEligible = true;
+                break;
             default:
-                return false;
+                break;
         }
+        if (!shapeEligible) return false;
+        return IsAnimSyncEnabledForDisplayId(e.displayId);
     }
 
     static bool ShouldDetachDefaultAttachPoints(const AttachEntry& e) noexcept
@@ -2597,6 +2702,7 @@ r.count = static_cast<uint16_t>(collN);
                 e.equipSlot = a.modelSlot;
                 e.attachId  = attach;
                 e.subObj    = subObj;
+                e.displayId = displayId;
                 std::memcpy(e.keyBuf, modelPath, sizeof(e.keyBuf));
                 std::memcpy(e.texBuf, texPath,   sizeof(e.texBuf));
                 std::memcpy(e.matTexBuf, matTexSpec, sizeof(e.matTexBuf));
@@ -2674,6 +2780,7 @@ r.count = static_cast<uint16_t>(collN);
                 e.equipSlot = a.modelSlot;
                 e.attachId  = attach;
                 e.subObj    = subObj;
+                e.displayId = displayId;
                 std::memcpy(e.keyBuf, modelPath, sizeof(e.keyBuf));
                 std::memcpy(e.texBuf, texPath,   sizeof(e.texBuf));
                 std::memcpy(e.matTexBuf, matTexSpec, sizeof(e.matTexBuf));
@@ -3384,6 +3491,10 @@ r.count = static_cast<uint16_t>(collN);
     // scene's dispatch calls never get stashed, CharAddHandItemDetour always misses for them, and
     // that scene silently keeps whatever Model1 the native lookup resolved (the un-baked base
     // model) instead of ever reaching the mainhand/offhand override.
+    //
+    // ROLLED BACK 0x0071F55C (the "other visible characters" dispatch site): added, then reverted
+    // once the animation-sync feature turned out to be the actual regression source. Re-add only
+    // alongside fresh log evidence isolating it again, independent of animation sync.
     //
     // The two known non-dispatch sites (0x00759077 sheathe-visual resolve, 0x0059800B paperdoll
     // polling) are still deliberately NOT stashed, so they can never be mistaken for a dispatch
