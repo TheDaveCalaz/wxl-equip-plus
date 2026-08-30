@@ -45,7 +45,40 @@ namespace wxl::scripts::equipextension
 {
     namespace ev   = wxl::events;
     namespace gm2  = wxl::game::m2;
+    namespace goff = wxl::offsets::game::m2; // raw offsets not curated into gm2:: (bone-state block,
+                                              // sequence control) -- kept extension-local rather than
+                                              // touching the shared core for a module-specific feature
     using wxl::game::Native;
+
+    // ─── Local sequence bindings (not part of the core's gm2:: surface) ────────────
+    //
+    // HasSequence/GetBoneSequenceId/SetBoneSequence are called from exactly one place in this
+    // extension (SyncCollectionSequence, below). Kept as extension-local Native<> wrappers instead
+    // of adding to the shared core API surface, since nothing outside this module needs them yet;
+    // promote to wxl::game::m2 if a second module ends up wanting the same calls.
+    //
+    // kGetBoneSequenceId/kSetBoneSequence's Fn typedefs already exist in offsets/game/M2.hpp
+    // (M2_GetBoneSequenceIdFn / M2_SetBoneSequenceFn); kHasSequence has no typedef there yet, so
+    // it's declared here instead of touching that shared header for one extension's use.
+    using M2_HasSequenceFn = int(__fastcall*)(void* instance, void* edx, uint32_t seqId);
+
+    static bool GM2_HasSequence(void* instance, uint32_t seqId)
+    {
+        return Native<M2_HasSequenceFn>(goff::kHasSequence)(instance, nullptr, seqId) != 0;
+    }
+
+    static uint32_t GM2_GetBoneSequenceId(void* instance, uint32_t slot)
+    {
+        return Native<goff::M2_GetBoneSequenceIdFn>(goff::kGetBoneSequenceId)(instance, nullptr, slot);
+    }
+
+    static void GM2_SetBoneSequence(void* instance, uint32_t slot, uint32_t seqId,
+                                     uint32_t prevSeqId, uint32_t prevSubSeqId,
+                                     float blendTime, uint32_t loop, uint32_t primary)
+    {
+        Native<goff::M2_SetBoneSequenceFn>(goff::kSetBoneSequence)(
+            instance, nullptr, slot, seqId, prevSeqId, prevSubSeqId, blendTime, loop, primary);
+    }
 
     // ─── Data types ──────────────────────────────────────────────────────────────
 
@@ -121,6 +154,17 @@ namespace wxl::scripts::equipextension
         uint16_t    texAnimProbeFrames = 0; // short targeted UV-animation diagnostic
         uint32_t    texAnimProbeFirst[4] = {};
         uint8_t     texAnimProbeChanged = 0;											
+
+        // ─── Collection animation sync (character sequence → collection instance) ──────────
+        // Not synced for TIMING/length -- only "the character started a (possibly new, possibly
+        // re-looped) sequence" is tracked, then pushed once per change. See OnM2PerFrameUpdate.
+        uint32_t    lastSyncedSeqId    = 0xFFFFFFFF; // sentinel: never yet compared
+        int32_t     lastSyncedSeqStart = 0;          // character's RuntimeBone seqStart anchor (ms)
+                                                      // last observed; a loop re-arm rewrites this
+                                                      // even when seqId itself is unchanged, which
+                                                      // is what catches a self-looping sequence
+                                                      // (e.g. a long channel/cast) restarting.
+        bool        seqSyncPrimed      = false;      // false until the first real anchor is read
     };
 
     // ─── File-scope state ─────────────────────────────────────────────────────────
@@ -203,6 +247,14 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         { "Ranged",    3,   4, false, false }, // 13 RANGED   (bow/gun=3, quiver/ammo=4)
     };
     constexpr uint32_t kCollectionAttach = 19;
+    // Native attach-point ids for the other item kinds this extension's animation sync now also
+    // covers (per WarcraftXL_equip.log's own Phase3 "attach=N" lines, cross-checked against each
+    // slot's DBC attachA/attachB): shoulders attach at both 6 and 5 (a matched pair, one per side),
+    // Waist/belt at 53, Head/helm at 11.
+    constexpr uint32_t kShoulderAttachA = 6;
+    constexpr uint32_t kShoulderAttachB = 5;
+    constexpr uint32_t kWaistAttach     = 53;
+    constexpr uint32_t kHeadAttach      = 11;
     constexpr uint32_t kFlagForceModelRaceGender = 0x80;
 
     // WoW C++ equip slot (0-18) → internal model slot. UINT32_MAX = not handled here.
@@ -291,6 +343,14 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
     {
         uint32_t v = 0;
         __try { v = *static_cast<const uint32_t*>(ptr); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return v;
+    }
+
+    static int32_t GuardedReadI32(const void* ptr) noexcept
+    {
+        int32_t v = 0;
+        __try { v = *static_cast<const int32_t*>(ptr); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
         return v;
     }
@@ -1176,6 +1236,59 @@ r.count = static_cast<uint16_t>(collN);
                (e.texBuf[0] && IsCollectionObjectPath(e.keyBuf));
     }
 
+    // Reads bone 0's RuntimeBone::seqStart anchor off a character instance's bone-state block.
+    // Bone 0 is what GetBoneSequenceId(-1)/SetBoneSequence(-1, ...) resolve to directly (the "-1
+    // shortcuts straight to bone index 0" primary-slot shortcut) -- so this is the same bone whose
+    // assigned/pending sequence GetBoneSequenceId(-1) already reports, just reaching the ANCHOR
+    // field instead. The anchor is rewritten by the engine every time it (re-)arms a sequence on
+    // that bone, including a self-loop restart where the seqId itself never changes -- which is
+    // exactly the signal a plain GetBoneSequenceId poll would miss for a long channel/cast loop.
+    static int32_t GuardedReadCharSeqStartAnchor(void* charInstance) noexcept
+    {
+        void* boneStates = GuardedReadPtr(
+            reinterpret_cast<uint8_t*>(charInstance) + goff::kOffInstBoneStates);
+        if (!boneStates) return 0;
+        return GuardedReadI32(
+            reinterpret_cast<uint8_t*>(boneStates) + goff::kOffRtBoneSeqStart);
+    }
+
+    // Pushes the character's currently-assigned primary sequence onto an animation-sync-eligible
+    // entry's own render context (Collections overlays, plus shoulder/waist/head accessories -- see
+    // IsAnimSyncEligible), gated by HasSequence so a model whose own animation set doesn't carry
+    // that id is left alone rather than silently falling back to whatever kResolveSequenceFallback
+    // substitutes. Fires once per detected change (new seqId OR the character's own seqStart anchor
+    // moving, which also covers a same-id self-loop restart); deliberately does NOT attempt to
+    // match playback position/length between the two models.
+    static void SyncCollectionSequence(AttachEntry& entry, void* charInstance) noexcept
+    {
+        const uint32_t charSeq   = GM2_GetBoneSequenceId(charInstance, static_cast<uint32_t>(-1));
+        const int32_t  seqStart  = GuardedReadCharSeqStartAnchor(charInstance);
+
+        if (entry.seqSyncPrimed &&
+            charSeq == entry.lastSyncedSeqId &&
+            seqStart == entry.lastSyncedSeqStart)
+        {
+            return; // nothing changed, including no loop restart
+        }
+
+        entry.lastSyncedSeqId    = charSeq;
+        entry.lastSyncedSeqStart = seqStart;
+        entry.seqSyncPrimed      = true;
+
+        if (!GM2_HasSequence(entry.renderCtx, charSeq))
+        {
+            EquipLog("  SeqSync: rctx=0x%p seqId=%u NOT present on collection model, skip push",
+                     entry.renderCtx, charSeq);
+            return;
+        }
+
+        GM2_SetBoneSequence(entry.renderCtx, static_cast<uint32_t>(-1), charSeq,
+                             /*prevSeqId*/ 0, /*prevSubSeqId*/ 0,
+                             /*blendTime*/ 0.0f, /*loop*/ 1, /*primary*/ 1);
+        EquipLog("  SeqSync: rctx=0x%p seqId=%u pushed (seqStart=%d)",
+                 entry.renderCtx, charSeq, seqStart);
+    }
+
     static bool IsCollectionEntry(const AttachEntry& e) noexcept
     {
         return e.geoFilter.count > 0 || IsCollectionObjectPath(e.keyBuf);
@@ -1196,6 +1309,31 @@ r.count = static_cast<uint16_t>(collN);
         // palette driven from the character skeleton. Dedicated helm/shoulder/belt models use
         // native attachment points and must retain their own accessory-bone animation chains.
         return IsRootSkinnedEntry(e);
+    }
+
+    static bool IsAnimSyncEligible(const AttachEntry& e) noexcept
+    {
+        // Collections/root-skinned overlays (own animation tracks merged onto the body) PLUS the
+        // native-attach-point accessories called out for this feature: shoulders, waist/belt,
+        // head/helm. Each of these rides its OWN separate M2 instance with its own animation set
+        // (unlike Collections, they are NOT bone-remapped onto the character skeleton -- see
+        // NeedsManualBoneRemap above), so "follow the character's sequence" here means pushing the
+        // same seqId onto that separate instance, not copying bone matrices.
+        //
+        // Deliberately excludes weapons (kWeaponAttachOffHand and the mainhand path): those already
+        // have their own sheathe/held-pose handling in WeaponExtension.cpp and are out of scope for
+        // this sync.
+        if (IsRootSkinnedEntry(e)) return true;
+        switch (e.attachId)
+        {
+            case kShoulderAttachA:
+            case kShoulderAttachB:
+            case kWaistAttach:
+            case kHeadAttach:
+                return true;
+            default:
+                return false;
+        }
     }
 
     static bool ShouldDetachDefaultAttachPoints(const AttachEntry& e) noexcept
@@ -1737,7 +1875,7 @@ r.count = static_cast<uint16_t>(collN);
         EquipLog("  RebuildAllModels: %zu entries, subObj=0x%p owner28=0x%p",
                  entries.size(), subObj, owner28);
 
- for (auto& e : entries) { e.renderCtx = nullptr; e.subObj = subObj; e.perFrameLogged = false; }
+ for (auto& e : entries) { e.renderCtx = nullptr; e.subObj = subObj; e.perFrameLogged = false; e.seqSyncPrimed = false; }
 //        // Reset all state tied to the previous render context.
 //        for (auto& e : entries)
 //        {
@@ -2658,6 +2796,17 @@ r.count = static_cast<uint16_t>(collN);
                         entry.renderCtx = nullptr;
                     }
                 }
+            }
+
+            // Animation sync: independent of charBuf above (a bone-palette pointer isn't needed to
+            // read/push a sequence id), so this runs even on a frame where the bone-copy sweep
+            // itself was skipped. Covers Collections overlays plus shoulder/waist/head accessories
+            // (see IsAnimSyncEligible) -- each such entry carries its own separate M2 instance and
+            // its own animation set, so this is a same-seqId push, not a bone/pose copy.
+            for (auto& entry : entries)
+            {
+                if (!IsAnimSyncEligible(entry) || !entry.renderCtx) continue;
+                SyncCollectionSequence(entry, renderCtx);
             }
             return;
         }
