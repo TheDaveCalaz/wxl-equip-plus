@@ -1297,8 +1297,22 @@ namespace wxl::scripts::equipextension
             return reinterpret_cast<fmt::M2CompBone*>(model.data() + boneOffset + i * sizeof(fmt::M2CompBone));
         };
 
+        uint32_t rootBoneCount = 0;
         for (uint32_t i = 0; i < boneCount; ++i)
         {
+            // Root bones ONLY. A bone's world transform is parent_world * local, so appending the
+            // SAME absolute offset to every bone (the previous behavior) compounds down the
+            // hierarchy: a bone one level under an offset root inherits that root's shift AND gets
+            // its own copy added on top, roughly doubling the displacement (worse at deeper levels).
+            // Confirmed as a live bug: a helm's particle emitter parented to a non-root child bone
+            // (e.g. a plume/gem/socket bone) rendered visibly too low, matching double application
+            // of the (negative) default Z offset. Applying only at the root and letting normal
+            // parent-child composition carry it down to every child -- skinned vertices, attachment
+            // points, and particle emitters alike, all of which resolve position from the bone's
+            // evaluated world matrix the same way -- gives a single, correct rigid nudge instead.
+            if (boneAt(i)->parentBone != -1) continue;
+            ++rootBoneCount;
+
             boneAt(i)->flags |= fmt::kBoneFlagTransformed;
 
             if (doTranslate)
@@ -1326,8 +1340,8 @@ namespace wxl::scripts::equipextension
                 track->value[0] = scale; track->value[1] = scale; track->value[2] = scale;
             }
         }
-        VPathLog("  ModelOffset: '%s' translate=%d(%.4f,%.4f,%.4f) scale=%d(%.4f) bones=%u",
-                 name, doTranslate ? 1 : 0, x, y, z, doScale ? 1 : 0, scale, boneCount);
+        VPathLog("  ModelOffset: '%s' translate=%d(%.4f,%.4f,%.4f) scale=%d(%.4f) rootBones=%u/%u",
+                 name, doTranslate ? 1 : 0, x, y, z, doScale ? 1 : 0, scale, rootBoneCount, boneCount);
         return true;
     }
 
