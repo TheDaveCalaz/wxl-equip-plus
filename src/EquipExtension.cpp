@@ -25,6 +25,8 @@
 #include "game/Io.hpp"
 #include "game/M2.hpp"
 #include "offsets/game/M2.hpp"
+#include "offsets/game/WMO.hpp" // kFallbackTextureName -- the client's own built-in "missing
+                                 // texture" special-cased path, reused here for equip textures
 #include "game/Unit.hpp"
 
 #include <windows.h>
@@ -716,6 +718,35 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
             EquipLog("  LoadResource CRASH CAUGHT tex='%s'", texBuf ? texBuf : "(null)");
         }
         return result;
+    }
+
+    // Failsafe wrapper: if the requested texture fails to load (missing/corrupt .blp, whether from
+    // a WXLEquipAnimations.csv/WXLHelmOffsets.csv-driven path or a plain DBC-resolved one), retries
+    // once against the client's own built-in "missing texture" special-cased name
+    // (wxl::offsets::game::wmo::kFallbackTextureName -- "createcrappygreentexture.blp", which
+    // CreateMaterial already substitutes for an empty WMO texture_1 slot; the client's texture
+    // loader recognizes it and hands back the built-in green/black checker with no real file on
+    // disk needed). This bakes the model in visibly-broken-but-present form, matching how a real
+    // missing texture already looks elsewhere in the client, instead of the item vanishing
+    // entirely from Phase3's prior "skip attach" behavior. Returns null only if even the built-in
+    // fallback name fails to resolve (should not happen; if it does, the caller's existing
+    // skip-attach path is still the correct last resort).
+    static void* SafeLoadResourceOrFallback(const char* texBuf, int flag, size_t phaseIdx,
+                                             const char* logLabel) noexcept
+    {
+        void* tex = SafeLoadResource(texBuf, flag);
+        if (tex) return tex;
+
+        EquipLog("  %s[%zu] texture load failed '%s', retrying with built-in missing-texture fallback",
+                 logLabel, phaseIdx, texBuf ? texBuf : "(null)");
+        tex = SafeLoadResource(wxl::offsets::game::wmo::kFallbackTextureName, flag);
+        if (tex)
+            EquipLog("  %s[%zu] fallback texture bound in place of '%s'",
+                     logLabel, phaseIdx, texBuf ? texBuf : "(null)");
+        else
+            EquipLog("  %s[%zu] built-in fallback texture ALSO failed to load, giving up",
+                     logLabel, phaseIdx);
+        return tex;
     }
 
     static bool SafeBindTexSlot(void* rctx, void* tex) noexcept
@@ -2177,11 +2208,11 @@ r.count = static_cast<uint16_t>(collN);
             if (e.texBuf[0])
             {
                 EquipLog("  Phase3[%zu] LoadResource tex='%s'", i, e.texBuf);
-                void* tex = SafeLoadResource(e.texBuf, 0);
+                void* tex = SafeLoadResourceOrFallback(e.texBuf, 0, i, "Phase3");
                 EquipLog("  Phase3[%zu] LoadResource -> 0x%p", i, tex);
                 if (!tex)
                 {
-                    EquipLog("  Phase3[%zu] texture load failed '%s', skip attach", i, e.texBuf);
+                    EquipLog("  Phase3[%zu] texture load failed '%s' (fallback also failed), skip attach", i, e.texBuf);
                     for (auto& e2 : entries)
                         if (SameAttachModelGroup(e2, e)) e2.renderCtx = nullptr;
                     gm2::ReleaseRenderCtx(rctx);
@@ -2943,10 +2974,11 @@ r.count = static_cast<uint16_t>(collN);
                         {
                             if (entry.texBuf[0])
                             {
-                                void* tex = gm2::LoadResource(entry.texBuf, 0);
+                                void* tex = SafeLoadResourceOrFallback(entry.texBuf, 0,
+                                                                        entry.attachId, "PerFrameReattach");
                                 if (!tex)
                                 {
-                                    EquipLog("  PerFrame reattach texture load failed '%s', skip", entry.texBuf);
+                                    EquipLog("  PerFrame reattach texture load failed '%s' (fallback also failed), skip", entry.texBuf);
                                     for (auto& e2 : entries)
                                         if (e2.renderCtx == renderCtx) e2.renderCtx = nullptr;
                                     gm2::ReleaseRenderCtx(rctx);
