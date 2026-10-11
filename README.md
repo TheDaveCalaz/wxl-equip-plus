@@ -1,53 +1,125 @@
-# wxl-equip-creature-extension-csv-WXL11
+<p align="center">
+  <img src="store/cover.png" alt="Equip Plus" width="640">
+</p>
 
-A [WarcraftXL](https://github.com/WarcraftXL/WarcraftXL) module that dramatically expands what `ItemDisplayInfo.dbc` and `CreatureDisplayInfo.dbc` can do. It extends M2 model attachment support to almost equippable slot (excluded tabard, rings, amulet and trinket), adds extra model channels to supported slots, and introduces collection M2 support with per-geoset filtering — all driven entirely by DBC data, with no client code changes per item.
-Allows to use and geoset filter creature models that have more than the 3 usual testures choices in the .dbc through the .csv sidecar.
-Allows for weapons to have custom offhand models (useful for asymmetric weapon models).
-Uses .csv sidecars to declare the extra textures newer models have.
+# wxl-equip-plus
+
+**3D models on every armour slot for the WoW 3.3.5a client, driven entirely by data.**
+
+A [WarcraftXL](https://github.com/WarcraftXL/wxl-core) 1.1 extension. A stock 3.3.5a client can only
+draw a model for the head, the shoulders and held items; chest, belt, legs, boots, gloves, bracers,
+cloaks, shirts and tabards are painted onto the body as textures and nothing more. Equip Plus lifts
+that limit:
+
+- **Two independent M2 models on every armour slot**, attached to any character or NPC wearing the item.
+- **Retail collection models** (the single-file armour pieces modern WoW uses) with per-geoset filtering,
+  so one collection file can serve the chest, legs, boots and gloves of a set.
+- **Bone remapping**, so collection pieces skinned to a retail skeleton follow the 3.3.5a body.
+- **Custom weapon models**, including asymmetric off-hand variants and multi-texture weapons.
+- **Creature models with more than three textures** and geoset filtering.
+- **Equipment animations** synchronised to the wearer.
+- **CSV sidecars** for everything a 3.3.5a `ItemDisplayInfo.dbc` row has no column for, so retail
+  data can be used without packing it into DBC fields.
+
+Driven by `ItemDisplayInfo.dbc`, `CreatureDisplayInfo.dbc` and optional CSV files. No client code
+changes per item.
+
 ---
 
-## Personal Notes
+## Where this comes from
 
-This was a personal project that branched off the main equip extension in order to allow players (me in particular) to use custom models for armors/weapons and/or custom texture variations and still have the funcionality for the extra textures those models may rquire.
-Since the original equip extensions at the time was not working for weapons and the db2 powered version is quite hard to use for injecting new models with multiple changeable textures, this side branch was born.
-Since I was at it, creatures support was added.
+Equip Plus is a maintained, Hub-packaged continuation of two earlier projects, with thanks to both:
 
-This is mainly aimed at people who want to implement custom models in an easy way. 
+- [**Morfium-G/wxl-equip-extension**](https://github.com/Morfium-G/wxl-equip-extension), the original
+  module, written when extensions were compiled into `WarcraftXL.dll`. It has not been updated for the
+  WarcraftXL 1.1 extension system.
+- [**Atraxian123/WXL-Equip-Creature-Extension-CSV-WXL11**](https://github.com/Atraxian123/WXL-Equip-Creature-Extension-CSV-WXL11),
+  which ported it to the 1.1 extension ABI and added weapons, creatures, CSV sidecars and equipment
+  animations. This repository carries its full commit history.
 
-This ahs been ported to the WarcraftXL 1.1 core and slightly expanded upon from 
+Also credited: [iThorgrim](https://github.com/iThorgrim) for WarcraftXL itself, and
+[Furioz420](https://github.com/Furioz420) for the original CSV sidecar implementation.
+
+What this repository adds on top of Atraxian's port:
+
+- A distinct id (`wxl-equip-plus`), so it can never overwrite, or be overwritten by, an updated
+  `wxl-equip-extension`. The manifest declares the two as conflicting: install one or the other.
+- A `wxl.json` manifest and store listing, so it appears in the WXL Hub.
+- A GitHub Actions workflow that builds the DLL against the current `wxl-core` v1.1 and publishes it as
+  a release on every push, so nobody has to build it themselves.
+- Documentation tidied and brought up to date.
 
 ---
 
 ## Requirements
-- **WarcraftXL core 1.1** installed in the WoW 3.3.5a client directory.
 
-- Take the WXLExtendedEquipment.ini from the samples and instructions folder and put it into the root of the client.
-You may now select the size of the creatures models cache. Eager loading has been disabled by code, so the settings for eager loading in the .ini are leftovers.
+- WoW 3.3.5a, build 12340.
+- [WarcraftXL](https://github.com/WarcraftXL/wxl-core) core **1.1**.
+- Not to be installed alongside `wxl-equip-extension`: both drive the same hooks.
 
----
-## Credits
+## Installing
 
-https://github.com/iThorgrim
-For the whole Warcraft XL project
+**Through the WXL Hub (recommended):** find **Equip Plus** in the store and press Install.
 
-https://github.com/Morfium-G
-For the original wxl-equipextension module
+**By hand:** download `wxl-equip-plus.dll` from the
+[latest release](../../releases/latest) and place it at:
 
-https://github.com/Furioz420
-For the original .csv implementation
+```
+<WoW folder>\Extensions\wxl-equip-plus\wxl-equip-plus.dll
+```
 
+The folder name and the DLL name must match; that is how WarcraftXL finds an extension.
 
+**Optional settings:** copy `Samples and instructions\WXLExtendedEquipment.ini` into your WoW folder
+(next to `Wow.exe`) to cap the memory used by baked creature models. Without it, the defaults apply.
 
----
+**Debug logging:** off by default because it sits on very hot render paths. Create an empty file called
+`WarcraftXL_equip.log.enable` in the WoW folder, or set the environment variable `WXL_EQUIP_LOG=1`, and
+the extension writes `WarcraftXL_equip.log`.
 
-## Building
+**Switching it off without uninstalling:** create an empty file called `WarcraftXL_equip-plus.disable`
+in the WoW folder.
 
-This module is auto-globbed by the WarcraftXL CMake build. To include it, clone or copy the `scripts/wxl-equip-extension/` directory into your WarcraftXL source tree, then build normally:
+## Building from source
+
+Every push to `main` is built by GitHub Actions (see `.github/workflows/release.yml`). To build locally
+you need Visual Studio 2022 (Desktop development with C++) and CMake:
 
 ```powershell
-$env:PATH = "C:\path\to\cmake\bin;$env:PATH"
-.\build.ps1
+git clone -b v1.1 https://github.com/WarcraftXL/wxl-core.git
+git clone https://github.com/TheDaveCalaz/wxl-equip-plus.git
+New-Item -ItemType Directory -Force wxl-core\extensions\wxl-equip-plus | Out-Null
+Copy-Item wxl-equip-plus\src wxl-core\extensions\wxl-equip-plus -Recurse
+cmake -S wxl-core -B wxl-core\build -A Win32
+cmake --build wxl-core\build --config Release --target wxl-equip-plus
 ```
+
+The DLL is written to `wxl-core\build\Release\wxl-equip-plus.dll`.
+
+---
+
+## Quick start: a 3D belt
+
+The smallest useful example. Give an item display a belt buckle model on the BeltBuckle attachment,
+without editing the DBC, by adding one row to `DBFilesClient\WXLItemDisplayModels.csv` (loose, or
+inside any patch MPQ):
+
+```csv
+DisplayID,ItemID,Slot,Layer,Side,Folder,Model,Texture,Geosets,Attach,SuffixPolicy,TexturePolicy,Flags
+69019,,Waist,Base,C,Waist,my_belt_buckle.mdx,my_belt_buckle_texture,,53,Exact,Exact,
+```
+
+That loads `Item\ObjectComponents\Waist\my_belt_buckle.mdx` with the texture
+`Item\ObjectComponents\Waist\my_belt_buckle_texture.blp`. `SuffixPolicy` decides whether the extension
+appends the race and gender to the model name (`Exact` uses the name as written). Full column
+references follow.
+
+**Which slots take which kind of model (CSV sidecars).** A plain, standalone model is accepted on the
+head, shoulders, waist, back, tabard and weapon slots. Chest, legs, feet, hands and wrists accept only
+*collection* models: set `Folder` to `Collections`, or give a geoset filter, or both. A plain model
+named for one of those slots is skipped (and logged, when logging is on).
+
+The sample DBCs and CSVs in `Samples and instructions/` show complete armour, weapon and creature setups.
 
 ---
 
@@ -167,7 +239,7 @@ Common columns:
 | `TextureType` | Retail texture type for the material row. |
 | `Folder` | Optional object component folder for texture pathing. |
 | `Texture` | Texture stem, or `__hide__...` for intentional hidden material rows. Required. |
-| `TargetMode` | Targeting behavior, keep`SkinMapOnly`. |
+| `TargetMode` | Targeting behaviour, keep `SkinMapOnly`. |
 
 Targeted material rows are applied to virtual collection models instead of globally replacing the model's main texture.
 
@@ -181,7 +253,7 @@ Applies model-specific material offsets for Helm models and other collections mo
 | `RaceSex` | Additional filter for specific race/sex combinations for the modifications. |
 | `Mode` | Mode of the modifications: can be Add, None or others (see the code) |
 | `Kind` | Kind of model to modify, generally reserved to Helm or Collection. |
-| `X Y Z` | Offsets to add ot the model. |
+| `X Y Z` | Offsets to add to the model. |
 | `Scale` | Scale multiplier for the model (generally not used, but for some collections Tauren Females need 0.8 and Tauren Males need 0.75. |
 
 This CSV is used to apply scale and offset modifications to helm models and to collection models.
@@ -207,15 +279,15 @@ Sidecar used to declare weapon models to bake and their geosets
 | `ModelPath` | full path of the model to use for pre-loading ending with the .mdx extension |
 | `Model2Path` | full path of the model to use for pre-loading ending with the .mdx extension |
 | `Geoset1` | geosets of the model 1 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets |
-| `Geoset1` | geosets of the model 2 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets |
+| `Geoset2` | geosets of the model 2 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets |
 | `Model1OffhandPath` | full path of the model to use for pre-loading ending with the .mdx extension for custom offhand model (optional)|
 | `Model2OffhandPath` | full path of the model to use for pre-loading ending with the .mdx extension for custom offhand model (optional)|
 | `Geoset1Offhand` | geosets of the model 1 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets for custom offhand model (optional)|
-| `Geoset1Offhand` | geosets of the model 2 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets for custom offhand model (optional)|
-| `NoAutoMirrot` | Opt out of the auto mirror for offhand models (NOT YET IMPLEMENTED) |
+| `Geoset2Offhand` | geosets of the model 2 that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets for custom offhand model (optional)|
+| `NoAutoMirror` | Opt out of the auto mirror for offhand models (NOT YET IMPLEMENTED) |
 
 Generally weapons only have 1 model and only skin geosets, but I wanted to give the option to modders to make complex weapons if they wanted.
-Also added support for custom models for the offhand version of the weapon. Yf you want a mirrored model of, let's say, a glaive weapon you will have to add it to the offhand model and provide the model yourself (mainly through WoW Blender Studio import and modifications)
+Also added support for custom models for the offhand version of the weapon. If you want a mirrored model of, let's say, a glaive weapon you will have to add it to the offhand model and provide the model yourself (mainly through WoW Blender Studio import and modifications)
 An auto-mirroring feature is in the works and not yet implemented.
 
 ### `WXLWeaponTextures.csv`
@@ -231,7 +303,7 @@ Sidecar for declaring the textures to bake into the weapons
 
 ### `WXLCreatureModels.csv`
 
-Sidecar used to specify which CreatureDisplayID and Creature Models have to be pre-loaded and whith which visible geosets
+Sidecar used to specify which CreatureDisplayID and Creature Models have to be pre-loaded and with which visible geosets
 
 | Column | Meaning |
 |--------|---------|
@@ -239,7 +311,7 @@ Sidecar used to specify which CreatureDisplayID and Creature Models have to be p
 | `CreatureModelPath` | full path of the model to use for pre-loading ending with the .mdx extension eg. creature\manawyrm2mount\manawyrm2mount.mdx |
 | `Geoset` | geosets of the model that will be rendered: empty for all geosets, 0 for only the base skin geosets, "xxxx, yyyy, ..." to render multiple geosets |
 
-The creation of the virtual models is doen eagerly at the start of the client. Note that having many models pre-loaded this way will be very memory intensive. Beware of the 4GB ram cap for the 32bit client.
+Virtual models are built lazily, the first time a display is requested (eager preloading is disabled in code). Note that having many models pre-loaded this way will be very memory intensive. Beware of the 4GB ram cap for the 32bit client.
 
 ### `WXLCreatureTextures.csv`
 
@@ -251,7 +323,7 @@ Sidecar used to specify which textures will be baked into the virtual pre-loaded
 | `TextureType` | Texture Type of the texture that will be baked into the pre-loaded model, see the table later in the readme |
 | `TexturePath` |  full path of the texture to bake in the pre-loaded model. eg. creature\manawyrm2mount\manawyrm2mount_armor_1.blp |
 
-Note that if the monster model in the CreatureDisplayInfo.dbc entry already has textures declared (for example Monster_1 _2 or _3) adding them into this sidecar will get precedente over the .dbc entry. 
+Note that if the monster model in the CreatureDisplayInfo.dbc entry already has textures declared (for example Monster_1 _2 or _3) adding them into this sidecar will get precedence over the .dbc entry. 
 
 ### `Changes to the CreatureModelData.dbc and CreatureDisplayInfo.dbc`
 
@@ -261,7 +333,7 @@ The suffix is _xxxx there xxxx is the CreatureDisplayID that is specified in the
 For example: creature\manawyrm2mount\manawyrm2mount.mdx with display ID 33113 will become creature\manawyrm2mount\manawyrm2mount_33113.mdx
 Otherwise the new virtual model will be pre-loaded, but never used by the client.
 
-The corresponding CreatureDisplayInfo.dbc etry will have to specify the correct model id from the CreatureModelData.dbc.
+The corresponding CreatureDisplayInfo.dbc entry will have to specify the correct model id from the CreatureModelData.dbc.
 
 ---
 
@@ -323,13 +395,13 @@ If no attachment is specified in `Icon2`, the following defaults apply:
 
 **Fix:** Clear `ModelName_1` and `ModelName_2` for any non-head/shoulder item that should not have an attached model. A cleanup script may be provided in a future release.
 
-**Possible crashes if the model specified in the .dbc and / or .csv is not present in the game files **
+**Missing models can crash the client.** If a model named in the DBC or a CSV sidecar is not present in the game files, the client may crash rather than show a placeholder. Check every path before shipping.
 
 ---
 
 ## Future Plans
 
-Adding support for real-time auto.mirroring of the main hand model for offhand equipment.
+Adding support for real-time auto-mirroring of the main hand model for offhand equipment.
 Migrating most of the extension-native hooks and functions to ones already present in the new Core.
 Adding support for armor skin textures without having to add the _u suffix and/or convert them to .png then back to palleted .blp with 256 colors.
 How-to tutorials for collections and weapons (low priority)

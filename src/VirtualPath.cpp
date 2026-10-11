@@ -948,20 +948,20 @@ namespace wxl::scripts::equipextension
         {
             if (!api) return false;
             bool ok = true;
-            ok &= api->HookAttach("wxl-equip-extension:FileOpen",  offsets::io::kFileOpen,
+            ok &= api->HookAttach("wxl-equip-plus:FileOpen",  offsets::io::kFileOpen,
                                   reinterpret_cast<void*>(&FileOpenDetour),
                                   reinterpret_cast<void**>(&g_origFileOpen),  WXL_HOOK_DEFAULT_PRIORITY) != 0;
-            ok &= api->HookAttach("wxl-equip-extension:FileSize",  offsets::io::kFileSize,
+            ok &= api->HookAttach("wxl-equip-plus:FileSize",  offsets::io::kFileSize,
                                   reinterpret_cast<void*>(&FileSizeDetour),
                                   reinterpret_cast<void**>(&g_origFileSize),  WXL_HOOK_DEFAULT_PRIORITY) != 0;
-            ok &= api->HookAttach("wxl-equip-extension:FileRead",  offsets::io::kFileRead,
+            ok &= api->HookAttach("wxl-equip-plus:FileRead",  offsets::io::kFileRead,
                                   reinterpret_cast<void*>(&FileReadDetour),
                                   reinterpret_cast<void**>(&g_origFileRead),  WXL_HOOK_DEFAULT_PRIORITY) != 0;
-            ok &= api->HookAttach("wxl-equip-extension:FileClose", offsets::io::kFileClose,
+            ok &= api->HookAttach("wxl-equip-plus:FileClose", offsets::io::kFileClose,
                                   reinterpret_cast<void*>(&FileCloseDetour),
                                   reinterpret_cast<void**>(&g_origFileClose), WXL_HOOK_DEFAULT_PRIORITY) != 0;
             if (!ok)
-                api->Log(WXL_LOG_ERROR, "equip-extension", "VirtualPath: one or more file-I/O hooks failed");
+                api->Log(WXL_LOG_ERROR, "equip-plus", "VirtualPath: one or more file-I/O hooks failed");
             return ok;
         }
     }

@@ -1,0 +1,91 @@
+# Builds wxl-equip-plus.dll against wxl-core's build shell. Every push to main publishes it as a GitHub
+# Release (which is what the WXL Hub installs); pull requests and manual runs only build, so a broken
+# change is caught before it ships. wxl-core is checked out fresh each run (branch v1.1) and this
+# extension's source is copied into core/extensions/wxl-equip-plus/, where wxl-core's root
+# CMakeLists.txt auto-discovers it as a build target -- no CMakeLists.txt of our own needed. The release
+# tag tracks wxl.json's version, so pushing without bumping it updates the existing release in place.
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to publish a Release
+
+env:
+  EXT_NAME: wxl-equip-plus
+  CORE_REPO: WarcraftXL/wxl-core
+  CORE_REF: v1.1
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout this extension
+        uses: actions/checkout@v4
+        with:
+          path: ext
+
+      - name: Checkout wxl-core (${{ env.CORE_REF }})
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CORE_REPO }}
+          ref: ${{ env.CORE_REF }}
+          submodules: recursive
+          path: core
+
+      - name: Record the wxl-core commit built against
+        id: core
+        shell: pwsh
+        run: |
+          $sha = git -C core rev-parse --short HEAD
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Drop this extension's source into core/extensions/
+        shell: pwsh
+        run: |
+          $dest = "core/extensions/$env:EXT_NAME"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Path "ext/src" -Destination $dest -Recurse -Force
+
+      - name: Configure (Win32)
+        shell: pwsh
+        run: cmake -S core -B core/build -A Win32
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build core/build --config Release --target $env:EXT_NAME --parallel
+
+      - name: Stage the DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "core/build/Release/$env:EXT_NAME.dll" -Destination "dist/$env:EXT_NAME.dll"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.EXT_NAME }}
+          path: dist/${{ env.EXT_NAME }}.dll
+
+      - name: Read the version out of the manifest
+        id: v
+        shell: pwsh
+        run: |
+          $v = (Get-Content ext/wxl.json -Raw | ConvertFrom-Json).extension.version
+          if (-not $v) { throw "wxl.json carries no extension.version" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Publish Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: ${{ env.EXT_NAME }} ${{ steps.v.outputs.version }}
+          body: |
+            Built from ${{ github.sha }} against wxl-core ${{ env.CORE_REF }} @ ${{ steps.core.outputs.sha }}.
+            Install through the WXL Hub, or drop the DLL into `Extensions\${{ env.EXT_NAME }}\` in your client folder.
+          files: dist/${{ env.EXT_NAME }}.dll

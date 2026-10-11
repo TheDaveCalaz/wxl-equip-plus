@@ -3438,9 +3438,9 @@ r.count = static_cast<uint16_t>(collN);
 
     EquipExtension::EquipExtension()
     {
-        if (GetFileAttributesA("WarcraftXL_equip-extension.disable") != INVALID_FILE_ATTRIBUTES)
+        if (GetFileAttributesA("WarcraftXL_equip-plus.disable") != INVALID_FILE_ATTRIBUTES)
         {
-//    api->Log(WXL_LOG_WARN, "equip-extension", "disabled by client flag");
+//    api->Log(WXL_LOG_WARN, "equip-plus", "disabled by client flag");
     return;
         }
         on<&EquipExtension::OnItemSlotChange>(ev::Event::OnItemSlotChange);
@@ -3820,12 +3820,12 @@ r.count = static_cast<uint16_t>(collN);
     bool InstallM2RenderHooks(const WXL_Api* api)
     {
         bool ok = true;
-        ok &= api->HookAttach("wxl-equip-extension:M2PerFrameUpdate",
+        ok &= api->HookAttach("wxl-equip-plus:M2PerFrameUpdate",
                               offsets::m2hooks::kM2PerFrameUpdate,
                               reinterpret_cast<void*>(&M2PerFrameUpdateDetour),
                               reinterpret_cast<void**>(&g_origM2PerFrame),
                               WXL_HOOK_DEFAULT_PRIORITY) != 0;
-        ok &= api->HookAttach("wxl-equip-extension:BuildBonePalette",
+        ok &= api->HookAttach("wxl-equip-plus:BuildBonePalette",
                               offsets::m2hooks::kBuildBonePalette,
                               reinterpret_cast<void*>(&BuildBonePaletteDetour),
                               reinterpret_cast<void**>(&g_origBuildBonePalette),
@@ -3849,7 +3849,7 @@ r.count = static_cast<uint16_t>(collN);
                               reinterpret_cast<void**>(&g_origItemDisplayLookup),
                               WXL_HOOK_DEFAULT_PRIORITY) != 0;
         if (!ok)
-            api->Log(WXL_LOG_ERROR, "equip-extension", "M2Render: one or more hooks failed");
+            api->Log(WXL_LOG_ERROR, "equip-plus", "M2Render: one or more hooks failed");
         return ok;
     }
     }
@@ -3867,7 +3867,7 @@ extern "C"
         static const WXL_PluginInfo info = {
             sizeof(WXL_PluginInfo),
             WXL_API_VERSION,
-            "wxl-equip-extension",
+            "wxl-equip-plus",
             1,                      // extension version (1.0)
             WXL_CLIENT_BUILD,
         };
@@ -3894,7 +3894,7 @@ wxl::scripts::equipextension::InstallM2RenderHooks(api);
         static wxl::scripts::creatureextension::CreatureExtension g_creature;
         static wxl::scripts::weaponextension::WeaponExtension     g_weapon;
 
-        api->Log(WXL_LOG_INFO, "equip-extension", "loaded (equip + creature + weapon)");
+        api->Log(WXL_LOG_INFO, "equip-plus", "loaded (equip + creature + weapon)");
         return 1;
     }
 }

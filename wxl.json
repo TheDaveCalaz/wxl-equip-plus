@@ -1,0 +1,47 @@
+{
+  "manifest": 1,
+
+  "extension": {
+    "id": "wxl-equip-plus",
+    "version": "1.1.0",
+    "abi": "1.1",
+    "entry": "wxl-equip-plus.dll",
+    "assets": [],
+    "requires": {},
+    "conflicts": ["wxl-equip-extension"],
+
+    "hooks": [
+      { "target": "Event.OnItemSlotChange" },
+      { "target": "Event.OnItemSlotClear" },
+      { "target": "Event.OnM2SkinFinalize" },
+      { "target": "Event.OnM2PerFrameUpdate" },
+      { "target": "Event.OnBuildBonePalette" },
+      { "target": "M2.PerFrameUpdate" },
+      { "target": "M2.BuildBonePalette" },
+      { "target": "M2.CharAddHandItem" },
+      { "target": "Db2.ItemDisplayInfoLookup" },
+      { "target": "Storage.FileOpen" },
+      { "target": "Storage.FileSize" },
+      { "target": "Storage.FileRead" },
+      { "target": "Storage.FileClose" }
+    ]
+  },
+
+  "deploy": {
+    "mode": "release",
+    "match": "*.dll"
+  },
+
+  "listing": {
+    "title": "Equip Plus",
+    "tagline": "3D models on every armour slot, retail collections with geoset filtering, custom weapon and creature models - driven by DBC rows or simple CSV sidecars.",
+    "description": "store/description.md",
+    "cover": "store/cover.png",
+    "gallery": [],
+    "categories": ["assets", "models", "items"],
+    "accent": "#c9a227"
+  },
+
+  "license": "GPL-3.0-or-later",
+  "signature": null
+}
