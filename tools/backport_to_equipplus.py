@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""Turn a wow-retail-backport project's Tier 2 export into something Equip Plus draws.
+
+The backport kit (https://github.com/Kirazul/wow-retail-backport) converts a retail set for a stock
+3.3.5a client and, with `build --extension`, also exports the retail 3D pieces a stock client cannot
+show (belt buckles, boot shells, gauntlet cuffs, robe skirts) as `out/extension/extension.json` plus
+`out/extension/<patch>-ext.MPQ`. Those files follow the kit's own naming and carry no texture for the
+item's colourway, so Equip Plus cannot use them as they are.
+
+This tool reads that export and writes an open-folder patch, `Data/patch-<L>.MPQ/`, holding:
+
+  * every piece model and its skin, renamed to the `<stem>_<Race><Sex>.m2` form Equip Plus resolves;
+  * the textures those models name, and each display's colourway texture (looked up in the kit's
+    own resolved selection and taken from its download cache, trimmed to the client's size limit);
+  * `DBFilesClient/WXLItemDisplayModels.csv`, one row per piece, keyed by the display ids the kit
+    assigned (`ids.json`), so no DBC is edited.
+
+Run it after the kit's `pack` step:
+
+    python backport_to_equipplus.py --work C:\\Backport\\Lionguard
+
+and copy the folder it reports into the client's `Data` folder. By default only belts are converted:
+they are race-agnostic models on the belt-buckle point and fit every body. The other pieces are skinned
+to retail's HD skeletons and only fit HD bodies; add `--armor-pieces` to include them.
+
+Python 3.9+, standard library only. Nothing is downloaded: everything comes from the kit's project.
+"""
+import argparse
+import csv
+import io
+import json
+import os
+import re
+import struct
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mpqread import MpqReader  # noqa: E402
+
+CSV_HEADER = ["DisplayID", "ItemID", "Slot", "Layer", "Side", "Folder", "Model", "Texture", "Geosets",
+              "Attach", "SuffixPolicy", "TexturePolicy", "Flags"]
+
+# kit slot name -> (Equip Plus slot name, folder under Item\ObjectComponents, attachment or "" for default)
+SLOTS = {
+    "waist": ("Waist", "Waist", "53"),
+    "chest": ("Chest", "Collections", ""),
+    "legs": ("Legs", "Collections", ""),
+    "feet": ("Feet", "Collections", ""),
+    "hands": ("Hands", "Collections", ""),
+    "wrist": ("Wrist", "Collections", ""),
+    "back": ("Back", "Collections", ""),
+}
+
+MAX_TEXTURE_EDGE = 1024  # the 3.3.5a client's limit, as the kit uses
+
+
+class ConvertError(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------------------------------
+# kit project
+
+def load_json(path, default=None):
+    if not os.path.exists(path):
+        if default is not None:
+            return default
+        raise ConvertError(f"missing {path} - run the backport kit's steps up to `pack` first")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+class KitProject:
+    def __init__(self, work):
+        self.work = os.path.abspath(work)
+        self.cfg = load_json(self.path("bp.json"))
+        self.build = self.cfg.get("build") or ""
+        self.ns = self.cfg.get("namespace") or "Backport"
+        self.extension = load_json(self.path("out", "extension", "extension.json"))
+        self.selection = load_json(self.path("selection.json"), {"displays": {}})
+        ids = load_json(self.path("ids.json"))
+        self.display_ids = {str(k): int(v) for k, v in (ids.get("display") or {}).items()}
+        ext_dir = self.path("out", "extension")
+        mpqs = [f for f in os.listdir(ext_dir) if f.lower().endswith("-ext.mpq")]
+        if not mpqs:
+            raise ConvertError(f"no *-ext.MPQ in {ext_dir} - run the kit's `build --extension` and `pack`")
+        self.ext_mpq = os.path.join(ext_dir, sorted(mpqs)[0])
+        cache = self.cfg.get("cache") or ""
+        self.cache_dirs = [d for d in (os.path.join(cache, self.build) if cache else "", cache,
+                                       self.path("cache", self.build), self.path("cache")) if d]
+
+    def path(self, *parts):
+        return os.path.join(self.work, *parts)
+
+    def retail_file(self, fdid):
+        for d in self.cache_dirs:
+            p = os.path.join(d, str(int(fdid)))
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    return f.read()
+        return None
+
+    def colourway_texture(self, retail_display, k, race_id):
+        """The texture retail puts in a piece model's item-texture slot (type 2) for this display."""
+        e = (self.selection.get("displays") or {}).get(str(retail_display)) or {}
+        rows = [t for t in e.get("model_tex", []) if t.get("k") == k]
+        rows += [t for t in e.get("extra_tex", []) if t.get("model") == k and t.get("type") == 2]
+        for want in (race_id, 0):
+            for t in rows:
+                if int(t.get("race") or 0) == want:
+                    return int(t["fdid"])
+        return int(rows[0]["fdid"]) if rows else None
+
+
+# --------------------------------------------------------------------------------------------------
+# M2 / BLP helpers
+
+def m2_texture_paths(data):
+    """Hard-coded (type 0) texture paths an MD20 model names."""
+    if data[:4] != b"MD20":
+        raise ConvertError("not an MD20 model")
+    n, off = struct.unpack_from("<II", data, 0x50)
+    out = []
+    for i in range(n):
+        typ, _flags, ln, lo = struct.unpack_from("<IIII", data, off + i * 16)
+        if typ == 0 and ln:
+            out.append(data[lo:lo + ln].rstrip(b"\0").decode("latin-1"))
+    return out
+
+
+def m2_uses_item_texture(data):
+    n, off = struct.unpack_from("<II", data, 0x50)
+    return any(struct.unpack_from("<I", data, off + i * 16)[0] == 2 for i in range(n))
+
+
+def blp_for_client(data):
+    """A retail BLP2 the 3.3.5a client can read: mip levels above 1024 px dropped, header rebuilt.
+
+    Handles the palettised and DXT encodings retail item textures use. Anything else (raw ARGB, or a
+    non-BLP2 file) is refused with an error rather than guessed at.
+    """
+    if data[:4] != b"BLP2":
+        raise ConvertError("not a BLP2 texture")
+    typ, enc = struct.unpack_from("<IB", data, 4)
+    w, h = struct.unpack_from("<II", data, 12)
+    if typ != 1 or enc not in (1, 2):
+        raise ConvertError(f"BLP encoding {enc} (type {typ}) needs re-encoding, which this tool does not do")
+    offs = list(struct.unpack_from("<16I", data, 20))
+    sizes = list(struct.unpack_from("<16I", data, 84))
+    chain = []
+    for i in range(16):
+        if not (offs[i] and sizes[i]) or offs[i] + sizes[i] > len(data):
+            break
+        chain.append(i)
+    if not chain or chain[0] != 0:
+        raise ConvertError("BLP has no usable top mip level")
+    drop = 0
+    while (w >> drop) > MAX_TEXTURE_EDGE or (h >> drop) > MAX_TEXTURE_EDGE:
+        drop += 1
+    keep = chain[drop:]
+    if not keep:
+        raise ConvertError(f"BLP has no mip level at or below {MAX_TEXTURE_EDGE} px")
+    head = bytearray(data[:148])
+    struct.pack_into("<II", head, 12, max(1, w >> drop), max(1, h >> drop))
+    palette = (data[148:148 + 1024] + bytes(1024))[:1024]
+    body = bytearray()
+    new_offs, new_sizes = [0] * 16, [0] * 16
+    for j, i in enumerate(keep):
+        new_offs[j] = 148 + 1024 + len(body)
+        new_sizes[j] = sizes[i]
+        body += data[offs[i]:offs[i] + sizes[i]]
+    struct.pack_into("<16I", head, 20, *new_offs)
+    struct.pack_into("<16I", head, 84, *new_sizes)
+    head[11] = 1 if len(keep) > 1 else 0  # has-mips flag
+    return bytes(head) + palette + bytes(body)
+
+
+# --------------------------------------------------------------------------------------------------
+# naming
+
+def equip_plus_name(kit_model_path, prefix, sex):
+    """Kit:  ...\\<stem>_<Prefix><Sex>__src__s<hash>.m2   ->   ( <stem>__src__s<hash> , file base )
+
+    Equip Plus builds `<Model stem>_<Race><Sex>.m2`, so the race and sex move to the end.
+    """
+    base = kit_model_path.replace("/", "\\").split("\\")[-1]
+    if not base.lower().endswith(".m2"):
+        raise ConvertError(f"unexpected model name {base}")
+    base = base[:-3]
+    token = f"_{prefix}{sex}"
+    at = base.rfind(token)
+    if at < 0:
+        raise ConvertError(f"{base}: no {token} in the name")
+    stem = base[:at] + base[at + len(token):]
+    # Retail cuts per-sex pieces into files named "..._male..." / "..._female...". Equip Plus already
+    # adds the sex as a suffix, so drop the word when it matches the piece's sex: both sexes then share
+    # one stem and one CSV row.
+    word = "female" if sex == "F" else "male"
+    stem = re.sub(r"_%s(?=_|$)" % word, "", stem, count=1, flags=re.I)
+    return stem, f"{stem}{token}"
+
+
+def safe_component(text):
+    return re.sub(r"[^A-Za-z0-9_]+", "_", text).strip("_")
+
+
+# --------------------------------------------------------------------------------------------------
+
+def free_patch_letter(data_dir, wanted):
+    taken = set()
+    if data_dir and os.path.isdir(data_dir):
+        for n in os.listdir(data_dir):
+            m = re.fullmatch(r"patch-(.)\.mpq", n, re.I)
+            if m:
+                taken.add(m.group(1).upper())
+    if wanted:
+        if wanted.upper() in taken:
+            raise ConvertError(f"patch-{wanted}.MPQ already exists in {data_dir}")
+        return wanted.upper()
+    for letter in "WVUTSRQOLKJHF":
+        if letter not in taken:
+            return letter
+    raise ConvertError("no free patch letter")
+
+
+def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
+    kit = KitProject(work)
+    data_dir = kit.cfg.get("client_data") or ""
+    letter = free_patch_letter(data_dir, letter)
+    patch_dir_name = f"patch-{letter}.MPQ"
+    out_root = os.path.abspath(out_root or kit.path("out", "equip-plus"))
+    patch = os.path.join(out_root, patch_dir_name)
+    files = {}          # archive path -> bytes
+    rows = []
+    problems = []
+    skipped_slots = {}
+
+    with MpqReader(kit.ext_mpq) as mpq:
+        for retail, entry in sorted(kit.extension.items(), key=lambda kv: int(kv[0])):
+            slot = entry.get("slot")
+            if slot not in SLOTS:
+                skipped_slots[slot] = skipped_slots.get(slot, 0) + 1
+                continue
+            new_id = kit.display_ids.get(str(retail)) or entry.get("new_display")
+            if not new_id:
+                problems.append(f"display {retail}: no new display id in ids.json (run the kit's `tables`)")
+                continue
+            ep_slot, folder_root, attach = SLOTS[slot]
+            pieces = [p for p in entry.get("pieces", []) if not p.get("error")]
+            skinned = [p for p in pieces if p.get("skinned_to_retail_bones")]
+            if skinned and not armor_pieces:
+                skipped_slots[f"{slot} (skinned, needs --armor-pieces)"] = \
+                    skipped_slots.get(f"{slot} (skinned, needs --armor-pieces)", 0) + 1
+                continue
+            folder = f"{folder_root}\\{kit.ns}"
+            by_stem = {}
+            for p in pieces:
+                stem, base = equip_plus_name(p["model"], p["prefix"], p["sex"])
+                by_stem.setdefault((p.get("k", 0), stem), []).append((p, base))
+
+            for (k, stem), group in sorted(by_stem.items()):
+                texture_name = ""
+                needs_item_texture = False
+                for p, base in group:
+                    src = p["model"]
+                    model = mpq.read(src)
+                    skin = mpq.read(src[:-3] + "00.skin")
+                    dest = f"Item\\ObjectComponents\\{folder}\\{base}"
+                    files[dest + ".m2"] = model
+                    files[dest + "00.skin"] = skin
+                    needs_item_texture |= m2_uses_item_texture(model)
+                    for tex in m2_texture_paths(model):
+                        if tex not in files:
+                            if not mpq.has(tex):
+                                problems.append(f"{base}: names {tex}, which the kit's archive lacks")
+                                continue
+                            files[tex] = mpq.read(tex)
+                if needs_item_texture:
+                    fdid = kit.colourway_texture(retail, k, int(group[0][0].get("retail_race") or 0))
+                    raw = kit.retail_file(fdid) if fdid else None
+                    if raw is None:
+                        problems.append(f"display {retail} ({ep_slot}): colourway texture "
+                                        f"{fdid or '(not in selection.json)'} not in the kit's cache - "
+                                        "the piece would draw untextured, so it was left out")
+                        continue
+                    try:
+                        blp = blp_for_client(raw)
+                    except ConvertError as ex:
+                        problems.append(f"display {retail}: texture {fdid}: {ex}")
+                        continue
+                    texture_name = f"{safe_component(kit.ns).lower()}_{fdid}"
+                    files[f"Item\\ObjectComponents\\{folder}\\{texture_name}.blp"] = blp
+                rows.append({
+                    "DisplayID": new_id, "ItemID": "", "Slot": ep_slot, "Layer": "Base", "Side": "C",
+                    "Folder": folder, "Model": f"{stem}.mdx", "Texture": texture_name, "Geosets": "",
+                    "Attach": attach, "SuffixPolicy": "Legacy", "TexturePolicy": "Exact", "Flags": "",
+                })
+
+    if not rows:
+        raise ConvertError("nothing to convert" + ("" if armor_pieces else
+                           " (only belts are converted by default; --armor-pieces adds the rest)"))
+
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=CSV_HEADER, lineterminator="\n")
+    w.writeheader()
+    for r in sorted(rows, key=lambda r: (int(r["DisplayID"]), r["Model"])):
+        w.writerow(r)
+    files["DBFilesClient\\WXLItemDisplayModels.csv"] = buf.getvalue().encode("utf-8")
+
+    for rel, data in files.items():
+        dest = os.path.join(patch, *rel.split("\\"))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as f:
+            f.write(data)
+
+    models = sum(1 for k in files if k.lower().endswith(".m2"))
+    textures = sum(1 for k in files if k.lower().endswith(".blp"))
+    log(f"equip-plus: {len(rows)} CSV rows, {models} models, {textures} textures -> {patch}")
+    for s, n in sorted(skipped_slots.items(), key=lambda kv: str(kv[0])):
+        log(f"  skipped {n} display(s): {s}")
+    for p in problems:
+        log(f"  PROBLEM {p}")
+    target = data_dir or "<WoW>\\Data"
+    log(f"install: copy the folder {patch_dir_name} into {target} (Equip Plus must be installed); "
+        "delete <WoW>\\Cache")
+    return {"patch": patch, "rows": rows, "problems": problems, "files": sorted(files)}
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--work", required=True, help="the backport kit's project folder (the --work you used)")
+    ap.add_argument("--out", help="where to write the folder patch (default: <work>/out/equip-plus)")
+    ap.add_argument("--letter", help="patch letter (default: the first free one of W V U T ...)")
+    ap.add_argument("--armor-pieces", action="store_true",
+                    help="also convert the pieces skinned to retail's HD skeletons (fit HD bodies only)")
+    a = ap.parse_args(argv)
+    try:
+        result = convert(a.work, a.out, a.letter, a.armor_pieces)
+    except ConvertError as ex:
+        print(f"equip-plus: FAIL - {ex}", file=sys.stderr)
+        return 1
+    return 2 if result["problems"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

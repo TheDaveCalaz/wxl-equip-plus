@@ -98,6 +98,21 @@ The DLL is written to `wxl-core\build\Release\wxl-equip-plus.dll`.
 
 ---
 
+## Retail sets from the backport kit
+
+[wow-retail-backport](https://github.com/Kirazul/wow-retail-backport) converts a retail armour set for the
+3.3.5a client, and with `build --extension` exports the 3D pieces only an extension can draw. Equip Plus
+ships a converter that turns that export into a ready-to-copy folder patch - models renamed, colourway
+textures included, CSV rows written:
+
+```powershell
+python tools\backport_to_equipplus.py --work C:\Backport\Lionguard
+```
+
+See [`tools/README.md`](tools/README.md).
+
+---
+
 ## Quick start: a 3D belt
 
 The smallest useful example. Give an item display a belt buckle model on the BeltBuckle attachment,
