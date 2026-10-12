@@ -391,11 +391,25 @@ If no attachment is specified in `Icon2`, the following defaults apply:
 
 ## Known issues
 
-**Dirty vanilla DBC entries:** Many stock 3.3.5a `ItemDisplayInfo.dbc` rows have `ModelName_1` or `ModelName_2` populated with values copied from other items (typically shoulders) that were never cleaned up because they had no visual effect in the base client. With this module active, those values will resolve and cause "missing model" placeholder boxes to appear on characters.
+**Stale stock DBC entries (handled).** Stock 3.3.5a `ItemDisplayInfo.dbc` was never cleaned of model
+names copied between rows. A typical client has several hundred glove, boot, bracer, belt, chest and leg
+displays whose `ModelName_1`/`ModelName_2` still name a helm or shoulder model. They did nothing in the
+base game, but an extension that honours those columns turns each one into a checkered box, a crash, or
+a pauldron hanging from a belt buckle - on NPCs and bots as much as on players. The original
+wxl-equip-extension asked you to clean the DBC by hand. Equip Plus guards against it in code:
 
-**Fix:** Clear `ModelName_1` and `ModelName_2` for any non-head/shoulder item that should not have an attached model. A cleanup script may be provided in a future release.
+- On chest, legs, feet, hands and wrists, a plain (non-collection) model from the DBC is ignored.
+- On every slot other than head and shoulders, a DBC model whose name starts with `Helm_`, `Shoulder_`,
+  `LShoulder_` or `RShoulder_` is ignored, unless the row sets `Icon2` - the signal that someone
+  configured it on purpose.
+- Every model, from the DBC or a CSV sidecar, must exist in the client's files before it is loaded. A
+  missing model is skipped and logged rather than attached.
 
-**Missing models can crash the client.** If a model named in the DBC or a CSV sidecar is not present in the game files, the client may crash rather than show a placeholder. Check every path before shipping.
+Measured against a real AzerothCore client: 680 stale armour displays (1,013 items) are present; after
+the first two rules a single belt row still names a model (a one-handed club), and the existence check
+skips it.
+
+**Missing textures** fall back to the client's built-in placeholder texture rather than failing.
 
 ---
 

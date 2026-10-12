@@ -704,6 +704,72 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         }
     }
 
+    // ─── Stale-row and missing-model guards (wxl-equip-plus) ─────────────────────────
+    //
+    // Stock 3.3.5a ItemDisplayInfo.dbc was never cleaned of model names copied between rows: in a
+    // typical client several hundred glove, boot, bracer, belt, chest and leg displays still carry a
+    // helm or shoulder model in ModelName_1/2. They did nothing in the base game, because the client
+    // only reads those columns for head and shoulders. Once this extension honours them, each one is
+    // either a missing file (a checkered box, or a crash on some code paths) or, worse, resolves: the
+    // folder inference below sends an "LShoulder_*" name to ObjectComponents\Shoulder, where the file
+    // really exists, and a pauldron ends up hanging from a belt buckle. NPCs and bots wear this gear
+    // constantly, so the failure shows up far from anything the user changed.
+    //
+    // Two guards, both applied before an entry is queued:
+    //   1. IsStrayLegacyModelName: on any slot other than head and shoulder, a DBC model whose stem is
+    //      a stock helm/shoulder name is ignored unless the row opted in through Icon2.
+    //   2. ModelFileExists: every model, from the DBC or a CSV sidecar, must exist in the client's
+    //      file layer. A missing one is skipped and logged, never loaded.
+
+    static bool StartsWithCI(const char* s, const char* prefix) noexcept; // defined below
+
+    static bool IsStrayLegacyModelName(const char* stem) noexcept
+    {
+        const char* base = stem;
+        for (const char* s = stem; *s; ++s)
+            if (*s == '\\' || *s == '/') base = s + 1;
+        return StartsWithCI(base, "lshoulder_") || StartsWithCI(base, "rshoulder_") ||
+               StartsWithCI(base, "shoulder_")  || StartsWithCI(base, "helm_");
+    }
+
+    // SEH-only: no C++ objects here, so __try is legal. Opens without preloading (flags 0) purely to
+    // learn whether the name resolves; the handle is closed straight away.
+    static int RawModelFileOpenable(const char* path) noexcept
+    {
+        void* handle = nullptr;
+        int ok = 0;
+        __try
+        {
+            if (wxl::game::io::FileOpen(path, 0, &handle) && handle) ok = 1;
+            if (handle) wxl::game::io::FileClose(handle);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { ok = 0; }
+        return ok;
+    }
+
+    // Goes through the client's own file layer, so every MPQ, open-folder patch, loose file and WXL
+    // storage provider or redirect counts exactly as it will for the real load. The engine loads
+    // models as .m2 whatever the DBC says, so a trailing .mdx is checked as .m2. Cached per path:
+    // the answer cannot change while the client runs.
+    static bool ModelFileExists(const char* path) noexcept
+    {
+        static std::unordered_map<std::string, bool> s_cache;
+        if (!path || !*path) return false;
+
+        std::string key(path);
+        for (char& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (key.size() > 4 && key.compare(key.size() - 4, 4, ".mdx") == 0)
+            key.replace(key.size() - 4, 4, ".m2");
+
+        auto it = s_cache.find(key);
+        if (it != s_cache.end()) return it->second;
+
+        const bool exists = RawModelFileOpenable(key.c_str()) != 0;
+        s_cache.emplace(key, exists);
+        if (!exists) EquipLog("  model not found, skipped: '%s'", key.c_str());
+        return exists;
+    }
+
     // SEH-only wrappers: no C++ objects in these functions, __try is safe.
     // gm2::LoadResource and gm2::BindTexSlot had zero exception protection -- the crash trail so
     // far has ruled out GetRenderCtx and DetachSlot in turn (both already guarded, both now proven
@@ -2555,11 +2621,13 @@ r.count = static_cast<uint16_t>(collN);
         char customFolder[64] = {};
         bool icon2AttachAExplicit = false;
         bool icon2AttachBExplicit = false;
+        bool icon2Configured = false; // the row opted in to extension behaviour through Icon2
         // Guard pointer range before dereferencing: a raw integer in g_disp+0x18 could be a
         // small non-null value (GeosetGroup integer) that would AV if dereferenced directly.
         if (icon2str && reinterpret_cast<uintptr_t>(icon2str) > 0x10000
             && *icon2str && (*icon2str == ':' || (*icon2str >= '0' && *icon2str <= '9')))
         {
+            icon2Configured = true;
             icon2AttachAExplicit = Icon2FieldHasValue(icon2str, 0);
             icon2AttachBExplicit = Icon2FieldHasValue(icon2str, 1);
             ParseIcon2(icon2str, &attachA_l, &attachA_r, &attachB_l, &attachB_r,
@@ -2697,6 +2765,14 @@ r.count = static_cast<uint16_t>(collN);
                              label, idx, stem, a.modelSlot);
                     continue;
                 }
+                if (!isCollection && a.modelSlot != 0 && a.modelSlot != 1 && !icon2Configured
+                    && IsStrayLegacyModelName(stem))
+                {
+                    EquipLog("  %s[%u]: stale stock model '%s' on slot %u (displayId=%u) ignored; "
+                             "set Icon2 on the row to use it deliberately",
+                             label, idx, stem, a.modelSlot, displayId);
+                    continue;
+                }
 
                 const uint32_t ef = effectiveFlags(isCollection);
                 uint32_t attach = attachForEntry(isCollection, mixedCollectionRow, columnAttach,
@@ -2713,6 +2789,12 @@ r.count = static_cast<uint16_t>(collN);
                 char modelPath[264];
                 BuildSlotPath(modelPath, stem, raceCode, genderStr, ef, cfg.folder,
                               isCollection, customFolder);
+                if (!ModelFileExists(modelPath))
+                {
+                    EquipLog("  %s[%u]: displayId=%u slot=%u model missing, skip", label, idx,
+                             displayId, a.modelSlot);
+                    continue;
+                }
 
                 char texPath[264] = {};
                 if (texPart[0])
@@ -2790,6 +2872,13 @@ r.count = static_cast<uint16_t>(collN);
                 char modelPath[264];
                 BuildSlotPath(modelPath, sc.model, raceCode, genderStr, modelFlags, cfg.folder,
                               isCollectionPath, sc.folder[0] ? sc.folder : nullptr);
+                if (!ModelFileExists(modelPath))
+                {
+                    EquipLog("  SC[%u]: displayId=%u slot=%u model missing, skip", sidecarIndex,
+                             displayId, a.modelSlot);
+                    ++sidecarIndex;
+                    continue;
+                }
 
                 char texPath[264] = {};
                 if (sc.texture[0])
