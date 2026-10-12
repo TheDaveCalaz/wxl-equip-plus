@@ -103,6 +103,25 @@ The DLL is written to `wxl-core\build\Release\wxl-equip-plus.dll`.
 
 ---
 
+## Backport Helper - retail sets, step by step
+
+Not comfortable with command lines? Double-click **`Backport Helper.bat`** in this repository's folder. It
+asks where your kit, client and server are once, then gives you a menu:
+
+1. **Add something** - search retail by name and tick what you want.
+2. **Build** - runs every backport-kit step in order and explains, in plain English, any that fails.
+3. **Install** - backs up what it replaces, then updates `patch-X` (the sets) and `patch-W` (their 3D
+   pieces for Equip Plus), clears the client cache, merges your server's tables without losing your own
+   rows, and runs the item SQL. It offers to install Equip Plus if it is missing.
+4. **Undo last install** - puts everything back.
+
+It follows the rules that are easy to get wrong by hand: one kit project for everything, never re-scanning
+while the kit's own patch is installed, reusing the same `patch-W`, and asking before it touches the
+server. Your database password is asked for each time and never saved. Details in
+[`tools/README.md`](tools/README.md).
+
+---
+
 ## Retail sets from the backport kit
 
 [wow-retail-backport](https://github.com/Kirazul/wow-retail-backport) converts a retail armour set for the

@@ -1,5 +1,18 @@
 # Tools
 
+## `backport_helper.py` - the guided way (start here)
+
+Double-click `Backport Helper.bat` at the top of the repository (or run `python tools\backport_helper.py`).
+Everything below is what it does for you; you only need the individual tools if you want to run a step
+by hand.
+
+First run: it asks for the kit's folder (and offers to download the kit), your client's `Data` folder, the
+kit project to use (`C:\Backport\Lionguard` keeps what you already have), and optionally your server's
+`dbc` folder and database details. Settings are saved in `%USERPROFILE%\.wxl-equip-plus\helper.json`;
+your database password never is.
+
+Every install makes a dated backup under `<project>\backups\`, and **Undo last install** restores it.
+
 ## `backport_to_equipplus.py` - retail sets from the backport kit, in 3D
 
 [wow-retail-backport](https://github.com/Kirazul/wow-retail-backport) converts a retail armour set for a
