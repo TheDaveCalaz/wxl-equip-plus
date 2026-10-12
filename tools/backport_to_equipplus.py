@@ -31,6 +31,7 @@ import io
 import json
 import os
 import re
+import shutil
 import struct
 import sys
 
@@ -206,17 +207,41 @@ def safe_component(text):
 
 # --------------------------------------------------------------------------------------------------
 
-def free_patch_letter(data_dir, wanted):
-    taken = set()
+MARKER = "WXLEquipPlusSource.json"  # written at the root of every patch this tool makes
+
+
+def _marker_work(patch_path):
+    try:
+        with open(os.path.join(patch_path, MARKER), encoding="utf-8") as f:
+            return os.path.normcase(os.path.abspath(json.load(f).get("work", "")))
+    except (OSError, ValueError):
+        return None
+
+
+def choose_patch_letter(data_dir, wanted, work):
+    """The letter for this project's folder patch.
+
+    A patch this tool already made for the same kit project is reused, so running the tool again after
+    adding sets replaces that patch instead of creating a second one. Otherwise the first free letter.
+    """
+    taken, ours = {}, None
+    me = os.path.normcase(os.path.abspath(work))
     if data_dir and os.path.isdir(data_dir):
         for n in os.listdir(data_dir):
             m = re.fullmatch(r"patch-(.)\.mpq", n, re.I)
-            if m:
-                taken.add(m.group(1).upper())
+            if not m:
+                continue
+            letter = m.group(1).upper()
+            taken[letter] = n
+            if _marker_work(os.path.join(data_dir, n)) == me:
+                ours = letter
     if wanted:
-        if wanted.upper() in taken:
-            raise ConvertError(f"patch-{wanted}.MPQ already exists in {data_dir}")
-        return wanted.upper()
+        wanted = wanted.upper()
+        if wanted in taken and wanted != ours:
+            raise ConvertError(f"{taken[wanted]} already exists in {data_dir} and is not this project's")
+        return wanted
+    if ours:
+        return ours
     for letter in "WVUTSRQOLKJHF":
         if letter not in taken:
             return letter
@@ -226,7 +251,7 @@ def free_patch_letter(data_dir, wanted):
 def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
     kit = KitProject(work)
     data_dir = kit.cfg.get("client_data") or ""
-    letter = free_patch_letter(data_dir, letter)
+    letter = choose_patch_letter(data_dir, letter, work)
     patch_dir_name = f"patch-{letter}.MPQ"
     out_root = os.path.abspath(out_root or kit.path("out", "equip-plus"))
     patch = os.path.join(out_root, patch_dir_name)
@@ -307,6 +332,12 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
         w.writerow(r)
     files["DBFilesClient\\WXLItemDisplayModels.csv"] = buf.getvalue().encode("utf-8")
 
+    files[MARKER] = json.dumps({"tool": "wxl-equip-plus backport_to_equipplus", "work": kit.work},
+                               indent=2).encode("utf-8")
+    if os.path.isdir(patch):  # a previous run: start clean so nothing stale survives
+        if _marker_work(patch) != os.path.normcase(kit.work):
+            raise ConvertError(f"{patch} exists and was not made for this project - remove it or use --out")
+        shutil.rmtree(patch)
     for rel, data in files.items():
         dest = os.path.join(patch, *rel.split("\\"))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -321,7 +352,9 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
     for p in problems:
         log(f"  PROBLEM {p}")
     target = data_dir or "<WoW>\\Data"
-    log(f"install: copy the folder {patch_dir_name} into {target} (Equip Plus must be installed); "
+    existing = os.path.join(data_dir, patch_dir_name) if data_dir else ""
+    verb = "replace" if existing and os.path.isdir(existing) else "copy"
+    log(f"install: {verb} the folder {patch_dir_name} in {target} (Equip Plus must be installed); "
         "delete <WoW>\\Cache")
     return {"patch": patch, "rows": rows, "problems": problems, "files": sorted(files)}
 

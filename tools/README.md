@@ -24,7 +24,9 @@ archive - containing:
   assigned. No DBC is edited and nothing is downloaded.
 
 Copy that folder into the client's `Data` folder and delete the client's `Cache` folder. The patch letter
-is the first one your `Data` folder does not already use (`--letter` picks one yourself).
+is the first one your `Data` folder does not already use (`--letter` picks one yourself); on later runs
+it reuses the patch it made before for the same project, so you replace one folder rather than gaining a
+second. Each patch carries a small `WXLEquipPlusSource.json` recording which project made it.
 
 **Belts by default.** Belt buckles are race-agnostic models on the belt-buckle attachment, so they fit
 every body. The other pieces are skinned to retail's HD skeletons: on HD bodies they follow the body, on
@@ -32,6 +34,56 @@ stock low-poly bodies they will not fit. Add `--armor-pieces` to convert them as
 
 **Exit codes:** 0 done; 2 done but with problems listed (for example a colourway texture missing from
 the kit's cache - that piece is left out rather than drawn untextured); 1 failed.
+
+## `merge_server_dbc.py` - the kit's item rows into your server's tables
+
+The kit's server tables (`<work>\out\dbc\`) are built from the client's copies. If your server's
+`Item.dbc` or `ItemDisplayInfo.dbc` hold rows the client's do not - mounts or custom items added by hand -
+copying the kit's files over them deletes those rows. This tool starts from the server's own files and
+changes only the rows the kit assigned:
+
+```powershell
+python tools\merge_server_dbc.py --work C:\Backport\Lionguard --server C:\AzerothCore\dbc
+```
+
+It reads the server folder but never writes to it: merged copies go to `<work>\out\server-dbc\`. Stock
+rows always keep the server's version. Running it again after a rebuild updates the kit's rows and adds
+new ones; nothing else changes.
+
+## Adding more sets later
+
+Keep **one kit project** for everything you backport to a client - the kit's own rule, because only one
+set of extended tables can win. Add to it rather than starting another:
+
+```powershell
+cd C:\Tools\wow-retail-backport\wow-retail-backport\scripts
+python bp.py select  --work C:\Backport\Lionguard --add --set <id> [--family]
+python bp.py fetch   --work C:\Backport\Lionguard
+python bp.py newtech --work C:\Backport\Lionguard
+python bp.py measure --work C:\Backport\Lionguard
+python bp.py build   --work C:\Backport\Lionguard --extension
+python bp.py tables  --work C:\Backport\Lionguard
+python bp.py audit   --work C:\Backport\Lionguard
+python bp.py prove-gates --work C:\Backport\Lionguard
+python bp.py pack    --work C:\Backport\Lionguard
+python bp.py sheet   --work C:\Backport\Lionguard
+```
+
+**Do not re-run `scan`** while the kit's patch is in your `Data` folder: scan would read the patch's own
+tables, which already hold your earlier rows, and `tables` would stop on the first repeated id. The scan
+from the project's first run is still correct. If you ever must re-scan (another patch changed the
+client's tables), take the kit's patch out of `Data` first and put the new one back after `pack`.
+
+Ids are stable: everything already backported keeps its display and item ids, so existing characters and
+CSV rows stay valid. Then:
+
+1. Replace `patch-X.MPQ` in `Data` with the new one from `<work>\out\`.
+2. `python tools\backport_to_equipplus.py --work <work>` - it recognises its own `patch-W.MPQ` and rebuilds
+   it with every set's pieces. Replace the folder in `Data`.
+3. `python tools\merge_server_dbc.py --work <work> --server <server dbc folder>`, copy the result into
+   the server's `dbc` folder, and run `<work>\out\sql\item_template.sql` again (it only touches the kit's
+   item ids).
+4. Delete the client's `Cache` folder and restart the worldserver.
 
 ## `mpqread.py`
 
