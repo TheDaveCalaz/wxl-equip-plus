@@ -141,16 +141,36 @@ def prepare_side_project(work, side):
           {"scan": led["scan"], "measure": led["measure"]})
 
 
-def convert_on_side(kit, side, displays, log=print):
+def keep_only(side, displays):
+    """Cut the side project's selection back to the wanted looks."""
+    path = os.path.join(side, "selection.json")
+    sel = _json(path, {})
+    want = {str(d) for d in displays}
+    sel["displays"] = {d: e for d, e in sel.get("displays", {}).items() if d in want}
+    for st in (sel.get("sets") or {}).values():
+        st["slots"] = {k: [x for x in v if str(x) in want] for k, v in st.get("slots", {}).items()}
+        st["slots"] = {k: v for k, v in st["slots"].items() if v}
+    sel["sets"] = {k: v for k, v in (sel.get("sets") or {}).items() if v.get("slots")}
+    _save(path, sel)
+
+
+def convert_on_side(kit, side, displays, sets=(), log=print):
+    # A look selected only by its display id comes without the retail items that wear it (so no
+    # name, quality or material). Selecting the main project's sets as well brings those in; the
+    # selection is then cut back to just the wanted looks before anything is fetched.
     sel = ["select", "--work", side]
     for d in displays:
         sel += ["--display", str(d)]
+    for sid in sets:
+        sel += ["--set", str(sid)]
     for args in (sel, ["fetch", "--work", side], ["newtech", "--work", side],
                  ["build", "--work", side, "--extension"]):
         log(f"   -> kit {args[0]} ...")
         code = run_kit(kit, *args, log=log)
         if args[0] != "build" and code != 0:
             raise RescueError(f"the kit's {args[0]} step failed on the side project (see above)")
+        if args[0] == "select":
+            keep_only(side, displays)
     # build is EXPECTED to fail ("nothing a 3.3.5 client can draw"); what matters is its export
     ext = os.path.join(side, "out", "extension", "extension.json")
     if not os.path.isfile(ext):
@@ -336,7 +356,8 @@ def rescue(work, kit, displays=None, log=print):
     side = os.path.join(work, "rescue")
     log(f"Bringing back {len(displays)} look(s): {', '.join(map(str, displays))}")
     prepare_side_project(work, side)
-    ext = convert_on_side(kit, side, displays, log=log)
+    sets = sorted((_json(os.path.join(work, "selection.json"), {}).get("sets") or {}), key=int)
+    ext = convert_on_side(kit, side, displays, sets, log=log)
     return stage(work, side, ext, log=log)
 
 

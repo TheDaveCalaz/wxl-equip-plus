@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## 1.2.2
 
+- **Fixed: nothing in a cloak row ever drew.** The client hands Equip Plus the tabard on model slot 9
+  and the cloak on slot 10; the slot table inherited from earlier versions had them the other way
+  round, so a `Back`/`Cape` row was looked for on the tabard and never matched (and a `Tabard` row on
+  the cloak). Found from an in-game log of the Forsaken Champion's Backtomb.
+- **Fixed: every CSV piece was drawn twice.** A folder patch's CSV is reachable under two names, so
+  each row was loaded twice and each model attached twice on top of itself. Identical rows for the same
+  display are now kept once, which halves the draw work for sidecar pieces.
+- Bring back left-out looks: brought-back items now keep their retail name, quality and material
+  (selecting a look by display id alone left them as "Rescued look <id>").
 - Backport Helper: **Bring back left-out looks** (menu option 8). Looks the kit cannot build for a stock
   client - purely 3D pieces such as the Forsaken Champion's Backtomb - are converted in a side project
   and given their own display ids (from 88000) and item ids (from 990000). Their table rows ship as

@@ -246,8 +246,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         { "Foot",     47,  48, false, false }, // 6  FEET
         { "Bracer",    3,   4, false, false }, // 7  WRIST
         { "Glove",     1,   2, false, false }, // 8  HAND
-        { "Cape",     12,  12, false, false }, // 9  BACK
-        { "Tabard",   34,  34, false, false }, // 10 TABARD
+        // The client's own model-slot order puts the tabard before the cloak (confirmed from a
+        // log: a cloak's display arrives on model slot 10, a tabard's on 9). Earlier versions
+        // had these two the wrong way round, so no cloak row in a sidecar ever matched.
+        { "Tabard",   34,  34, false, false }, // 9  TABARD
+        { "Cape",     12,  12, false, false }, // 10 BACK
         { "Weapon",    1,   1, false, false }, // 11 MAINHAND (HandRight_ItemVisual1)
         { "OffHand",    2,   2, false, false }, // 12 OFFHAND  (HandLeft_ItemVisual2, also shields)
         { "Ranged",    3,   4, false, false }, // 13 RANGED   (bow/gun=3, quiver/ammo=4)
@@ -279,11 +282,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         static_cast<uint32_t>(-1), // 11 deferred (FINGER2)
         static_cast<uint32_t>(-1), // 12 deferred (TRINKET1)
         static_cast<uint32_t>(-1), // 13 deferred (TRINKET2)
-        9,                       // 14 BACK
+        10,                      // 14 BACK
         15,                      // 15 MAINHAND
         16,                      // 16 OFFHAND
         17,                      // 17 RANGED
-        10,                      // 18 TABARD
+        9,                       // 18 TABARD
     };
 
     // ─── Diagnostic call-order sequence (temporary -- weapon mainhand/offhand investigation) ─────
@@ -1184,8 +1187,8 @@ r.count = static_cast<uint16_t>(collN);
         if (StartsWithCI(slot, "Foot") || StartsWithCI(slot, "Feet") || StartsWithCI(slot, "Boot")) return 6;
         if (StartsWithCI(slot, "Bracer") || StartsWithCI(slot, "Wrist")) return 7;
         if (StartsWithCI(slot, "Glove") || StartsWithCI(slot, "Hand")) return 8;
-        if (StartsWithCI(slot, "Cape") || StartsWithCI(slot, "Back") || StartsWithCI(slot, "Cloak")) return 9;
-        if (StartsWithCI(slot, "Tabard")) return 10;
+        if (StartsWithCI(slot, "Cape") || StartsWithCI(slot, "Back") || StartsWithCI(slot, "Cloak")) return 10;
+        if (StartsWithCI(slot, "Tabard")) return 9;
         // Weapon slots. Bare "Weapon" is intentionally left unmapped (returns -1, i.e.
         // "any slot") since a display ID is normally only ever equipped in one weapon
         // slot anyway; use the specific names below when a display can appear in more
@@ -1424,8 +1427,8 @@ r.count = static_cast<uint16_t>(collN);
             case 0:  // Head
             case 1:  // Shoulder
             case 4:  // Waist / 3D belts
-            case 9:  // Back/cape
-            case 10: // Tabard
+            case 9:  // Tabard
+            case 10: // Back/cape
             case 15: // MainHand
             case 16: // OffHand
             case 17: // Ranged
@@ -1689,7 +1692,27 @@ r.count = static_cast<uint16_t>(collN);
             if (geosets && *geosets) e.geoFilter = ParseGeosetFilter(geosets);
             if (!e.model[0]) continue;
 
-            g_sidecarModels[displayId].push_back(e);
+            // The same CSV is often reachable by two names (the merged DBFilesClient view and the
+            // folder patch's own path), so its rows would arrive twice and every piece be drawn
+            // twice. An identical row for the same display adds nothing; keep the first.
+            std::vector<SidecarModelEntry>& list = g_sidecarModels[displayId];
+            bool duplicate = false;
+            for (const SidecarModelEntry& o : list)
+            {
+                if (o.modelSlot == e.modelSlot && o.attachId == e.attachId &&
+                    o.modelFlags == e.modelFlags && o.textureFlags == e.textureFlags &&
+                    o.geoFilter.count == e.geoFilter.count &&
+                    std::memcmp(o.geoFilter.ids, e.geoFilter.ids, sizeof(e.geoFilter.ids)) == 0 &&
+                    _stricmp(o.folder, e.folder) == 0 && _stricmp(o.model, e.model) == 0 &&
+                    _stricmp(o.texture, e.texture) == 0)
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+
+            list.push_back(e);
             ++loaded;
         }
 
