@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Backport Helper: **Bring back left-out looks** (menu option 8). Looks the kit cannot build for a stock
+  client - purely 3D pieces such as the Forsaken Champion's Backtomb - are converted in a side project
+  and given their own display ids (from 88000) and item ids (from 990000). Their table rows ship as
+  `wxl-extended-dbc` add-on tables inside the Equip Plus patch, so the kit's tables are untouched; the
+  next Install adds them to the server tables and database as well. Undo removes them.
+- New tool `tools/rescue_left_out.py`; the converter and `merge_server_dbc.py` pick up its output.
+
 ## 1.2.1
 
 - **Fixed: only one shoulder showed** on two-part shoulders named `..._shoulder_left` / `..._shoulder_right`.

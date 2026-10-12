@@ -379,6 +379,29 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
                     "Attach": attach, "SuffixPolicy": "Legacy", "TexturePolicy": "Exact", "Flags": "",
                 })
 
+    # Looks the kit could not ship, brought back by rescue_left_out.py: their staged models, textures and
+    # icons, their CSV rows, and their table rows - shipped as wxl-extended-dbc add-ons
+    # (<Table>.dbc1-equipplus) so the kit's own tables in patch-X stay untouched.
+    rescue_dir = kit.path("out", "equip-plus-rescue")
+    rescued_rows = 0
+    if os.path.isfile(os.path.join(rescue_dir, "rows.json")):
+        with open(os.path.join(rescue_dir, "rows.json"), encoding="utf-8") as f:
+            extra = json.load(f)
+        rows.extend(extra)
+        rescued_rows = len(extra)
+        staged = os.path.join(rescue_dir, "files")
+        for dirpath, _dirs, names in os.walk(staged):
+            for n in names:
+                src = os.path.join(dirpath, n)
+                rel = os.path.relpath(src, staged).replace(os.sep, "\\")
+                with open(src, "rb") as f:
+                    files[rel] = f.read()
+        for table in ("ItemDisplayInfo", "Item"):
+            p = os.path.join(rescue_dir, "dbc", table + ".dbc")
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    files[f"DBFilesClient\\{table}.dbc1-equipplus"] = f.read()
+
     if not rows:
         raise ConvertError("nothing to convert" + ("" if armor_pieces else
                            " (only belts are converted by default; --armor-pieces adds the rest)"))
@@ -405,6 +428,9 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
     models = sum(1 for k in files if k.lower().endswith(".m2"))
     textures = sum(1 for k in files if k.lower().endswith(".blp"))
     log(f"equip-plus: {len(rows)} CSV rows, {models} models, {textures} textures -> {patch}")
+    if rescued_rows:
+        log(f"  includes {rescued_rows} row(s) for looks brought back by rescue_left_out.py, with their "
+            "table rows as ItemDisplayInfo/Item .dbc1-equipplus add-ons (needs wxl-extended-dbc)")
     for s, n in sorted(skipped_slots.items(), key=lambda kv: str(kv[0])):
         log(f"  skipped {n} display(s): {s}")
     for p in problems:

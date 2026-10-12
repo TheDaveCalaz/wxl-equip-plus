@@ -32,6 +32,7 @@ sys.path.insert(0, HERE)
 
 import backport_to_equipplus as converter  # noqa: E402
 import merge_server_dbc as merger  # noqa: E402
+import rescue_left_out as rescuer  # noqa: E402
 
 SETTINGS_DIR = os.path.join(os.path.expanduser("~"), ".wxl-equip-plus")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "helper.json")
@@ -638,31 +639,38 @@ def install(s):
 
 
 def run_sql(s):
-    sql = os.path.join(s["work"], "out", "sql", "item_template.sql")
-    if not os.path.isfile(sql):
+    files = [p for p in (os.path.join(s["work"], "out", "sql", "item_template.sql"),
+                         os.path.join(s["work"], "out", "equip-plus-rescue", "sql", "item_template.sql"))
+             if os.path.isfile(p)]
+    if not files:
         say("!! No item_template.sql was built - skipped.")
         return
     say()
     if not yes("Run the item SQL on your world database now?"):
         say(f"Skipped. To run it yourself: in the mysql prompt, USE {s.get('db_world', 'acore_world')}; then")
-        say("SOURCE " + sql.replace("\\", "/") + ";")
+        for sql in files:
+            say("SOURCE " + sql.replace("\\", "/") + ";")
         return
     mysql = s.get("mysql") or "mysql"
     if not (os.path.isfile(mysql) or shutil.which(mysql)):
         say(f"!! Cannot find mysql at '{mysql}'. Change it under Settings, or run the SQL yourself:")
-        say("   SOURCE " + sql.replace("\\", "/") + ";")
+        for sql in files:
+            say("   SOURCE " + sql.replace("\\", "/") + ";")
         return
     pw = getpass.getpass(f"Password for {s.get('db_user')} (not shown, not stored): ")
     env = dict(os.environ, MYSQL_PWD=pw)
-    with open(sql, "rb") as f:
-        r = subprocess.run([mysql, "-h", s.get("db_host", "127.0.0.1"), "-P", str(s.get("db_port", "3306")),
-                            "-u", s.get("db_user", "acore"), s.get("db_world", "acore_world")],
-                           stdin=f, env=env, capture_output=True, text=True)
-    if r.returncode == 0:
-        say("   item SQL applied")
-    else:
-        say("!! The SQL did not apply:")
-        say("   " + (r.stderr or r.stdout).strip().replace("\n", "\n   "))
+    for sql in files:
+        with open(sql, "rb") as f:
+            r = subprocess.run([mysql, "-h", s.get("db_host", "127.0.0.1"), "-P", str(s.get("db_port", "3306")),
+                                "-u", s.get("db_user", "acore"), s.get("db_world", "acore_world")],
+                               stdin=f, env=env, capture_output=True, text=True)
+        what = "item SQL" if "equip-plus-rescue" not in sql else "brought-back items' SQL"
+        if r.returncode == 0:
+            say(f"   {what} applied")
+        else:
+            say(f"!! The {what} did not apply:")
+            say("   " + (r.stderr or r.stdout).strip().replace("\n", "\n   "))
+            return
 
 
 def check_equip_plus(s, update=False):
@@ -733,6 +741,42 @@ def undo(s):
 
 
 # --------------------------------------------------------------------------------------------------
+# bring back left-out looks
+
+def bring_back(s):
+    title("Bring back left-out looks")
+    ex = excluded(s)
+    if not ex:
+        say("No looks have been left out, so there is nothing to bring back.")
+        return
+    say("These looks were left out because a stock client cannot draw them:")
+    for d, v in sorted(ex.items()):
+        say(f"   look {d} ({v.get('slot')})")
+    say()
+    say("Equip Plus CAN draw their 3D pieces. The helper has the kit convert them on a small side project,")
+    say("gives each its own item, and adds them to patch-W the next time you Install. Rigged pieces bind")
+    say("to the skeleton by bone name, so on stock bodies the fit may not be perfect - Undo puts it back.")
+    ext_dbc = os.path.join(client_root(s), "Extensions", "wxl-extended-dbc", "wxl-extended-dbc.dll")
+    if not os.path.isfile(ext_dbc):
+        say()
+        say("!! wxl-extended-dbc is not installed. The new items' table rows travel as its add-on files,")
+        say("   so install it from the WXL Hub first, or these looks will not appear.")
+        if not yes("Carry on anyway?", False):
+            return
+    if not yes("Bring them back?"):
+        return
+    try:
+        r = rescuer.rescue(s["work"], s["kit"], log=say)
+    except rescuer.RescueError as ex2:
+        say(f"!! {ex2}")
+        return
+    for p in r["problems"]:
+        say(f"   PROBLEM {p}")
+    say()
+    say(f"Done: {len(r['rows'])} model row(s) staged. Choose 'Install' to put them in your game and server.")
+
+
+# --------------------------------------------------------------------------------------------------
 # status and settings
 
 def status(s):
@@ -757,6 +801,11 @@ def status(s):
             say(f"   {n} (Equip Plus 3D pieces) installed: yes")
     dll = os.path.join(client_root(s), "Extensions", "wxl-equip-plus", "wxl-equip-plus.dll")
     say(f"   Equip Plus extension installed: {'yes' if os.path.isfile(dll) else 'no'}")
+    rec = _json(os.path.join(s["work"], "rescued.json"), {})
+    if rec:
+        say("   Looks brought back with Equip Plus: " + ", ".join(
+            f"{d} (display {v.get('display')}, item {', '.join(map(str, v.get('items', [])))})"
+            for d, v in sorted(rec.items())))
     ex = excluded(s)
     if ex:
         say(f"   Looks left out (a stock client cannot draw them): "
@@ -803,6 +852,7 @@ def main():
         say("  5. Where things stand")
         say("  6. Settings")
         say("  7. Quit")
+        say("  8. Bring back left-out looks  (3D pieces only Equip Plus can draw)")
         c = ask("Choose a number", "")
         try:
             if c == "1":
@@ -819,6 +869,8 @@ def main():
                 settings_menu(s)
             elif c == "7":
                 return 0
+            elif c == "8":
+                bring_back(s)
             else:
                 continue
         except KeyboardInterrupt:

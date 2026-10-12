@@ -78,7 +78,8 @@ class Dbc:
 
 
 def merge_table(name, server_path, kit_path, owned):
-    srv, kit = Dbc(server_path), Dbc(kit_path)
+    srv = server_path if isinstance(server_path, Dbc) else Dbc(server_path)
+    kit = Dbc(kit_path)
     if srv.fields != kit.fields:
         raise MergeError(f"{name}: server has {srv.fields} fields, kit has {kit.fields}")
     cols = set(STRING_COLUMNS.get(name, ()))
@@ -108,6 +109,18 @@ def merge_table(name, server_path, kit_path, owned):
     return srv, {"added": added, "replaced": replaced, "same": same, "stock_differs": stock_differs}
 
 
+def _rescued_ids(work, table):
+    """Display or item ids rescue_left_out.py assigned (its rescued.json)."""
+    try:
+        with open(os.path.join(work, "rescued.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return set()
+    if table == "ItemDisplayInfo":
+        return {int(v["display"]) for v in rec.values() if "display" in v}
+    return {int(i) for v in rec.values() for i in v.get("items", [])}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--work", required=True, help="the backport kit's project folder")
@@ -135,15 +148,28 @@ def main(argv=None):
         except MergeError as ex:
             print(f"merge: FAIL - {ex}", file=sys.stderr)
             return 1
-        with open(os.path.join(out, name + ".dbc"), "wb") as f:
-            f.write(table.to_bytes())
         print(f"merge: {name}.dbc  {len(table.rows)} rows  (kit rows: +{rep['added']} added, "
               f"{rep['replaced']} updated, {rep['same']} already up to date)")
+        # looks brought back by rescue_left_out.py: their own rows, their own ids
+        rp = os.path.join(work, "out", "equip-plus-rescue", "dbc", name + ".dbc")
+        if os.path.isfile(rp):
+            rescued = _rescued_ids(work, name)
+            try:
+                table, rrep = merge_table(name, table, rp, rescued)
+            except MergeError as ex:
+                print(f"merge: FAIL - {ex}", file=sys.stderr)
+                return 1
+            print(f"merge: {name}.dbc  brought-back looks: +{rrep['added']} added, {rrep['replaced']} updated, "
+                  f"{rrep['same']} already up to date")
+        with open(os.path.join(out, name + ".dbc"), "wb") as f:
+            f.write(table.to_bytes())
         if rep["stock_differs"]:
             print(f"  note: {rep['stock_differs']} stock row(s) differ between your client and server copies "
                   "(a client patch edited them); the server's rows were kept")
+    extra = os.path.join(work, "out", "equip-plus-rescue", "sql", "item_template.sql")
     print(f"merge: written to {out} - back up the server's dbc folder, copy these in, run the kit's "
-          "out\\sql\\item_template.sql, restart the worldserver")
+          "out\\sql\\item_template.sql" + (" and out\\equip-plus-rescue\\sql\\item_template.sql"
+                                            if os.path.isfile(extra) else "") + ", restart the worldserver")
     return 0
 
 

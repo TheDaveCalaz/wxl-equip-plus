@@ -17,6 +17,23 @@ If a build stops because a look has "nothing a 3.3.5 client can draw" - a purely
 coffin on the back - the helper offers to leave that look out and finish. It remembers the choice in
 `<project>\helper-excluded.json`, and **Where things stand** lists what was left out.
 
+**Bring back left-out looks** turns those purely 3D looks into Equip Plus pieces after all. They get
+their own display ids (from 88000) and item ids (from 990000), carried in add-on tables
+(`DBFilesClient\Item.dbc1-equipplus` and `ItemDisplayInfo.dbc1-equipplus` inside the Equip Plus patch),
+so the kit's own tables are untouched. This needs the `wxl-extended-dbc` extension. The next **Install**
+adds them to the patch, the server tables and the database. Rigged pieces are made for retail's bodies,
+so on stock bodies the fit can be off; **Undo last install** removes them again.
+
+## `rescue_left_out.py` - left-out looks, the long way
+
+What option 8 runs. It converts the left-out looks in a side project (`<work>\rescue`) that shares the
+main project's scan and download cache, then stages models, textures, table rows and SQL under
+`<work>\out\equip-plus-rescue\`, which the converter and merger pick up.
+
+```powershell
+python tools\rescue_left_out.py --work C:\Backport\Lionguard --kit C:\Tools\wow-retail-backport\wow-retail-backport
+```
+
 ## `backport_to_equipplus.py` - retail sets from the backport kit, in 3D
 
 [wow-retail-backport](https://github.com/Kirazul/wow-retail-backport) converts a retail armour set for a
