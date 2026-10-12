@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1
+
+- **Fixed: only one shoulder showed** on two-part shoulders named `..._shoulder_left` / `..._shoulder_right`.
+  The case-insensitive "contains" check inherited from earlier versions reported a match when every
+  character but the last agreed, so `_shoulder_right` matched `_shoulder_l` and both pauldrons were hung on
+  the left shoulder. The same fault could misplace any model whose name nearly matched another slot's
+  naming rule. Found from an in-game log of the Lionguard set.
+- Backport Helper: **Settings > Update Equip Plus** replaces an installed copy with the latest release.
+
 ## 1.2.0
 
 - **In-game panel** in the WarcraftXL overlay (F9): CSV rows loaded, models attached, stale stock rows

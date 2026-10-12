@@ -574,15 +574,22 @@ def run_sql(s):
         say("   " + (r.stderr or r.stdout).strip().replace("\n", "\n   "))
 
 
-def check_equip_plus(s):
+def check_equip_plus(s, update=False):
     dll = os.path.join(client_root(s), "Extensions", "wxl-equip-plus", "wxl-equip-plus.dll")
-    if os.path.isfile(dll):
+    if os.path.isfile(dll) and not update:
         return
     say()
-    say("Equip Plus is not installed, so the 3D belts and other pieces will not show.")
-    if not yes("Download the latest Equip Plus and install it now?"):
-        say("You can install it from the WXL Hub instead.")
-        return
+    if update:
+        if wow_running():
+            say("!! Close World of Warcraft first - the game keeps the extension file open.")
+            return
+        if not yes("Download the latest Equip Plus and replace the installed one?"):
+            return
+    else:
+        say("Equip Plus is not installed, so the 3D belts and other pieces will not show.")
+        if not yes("Download the latest Equip Plus and install it now?"):
+            say("You can install it from the WXL Hub instead.")
+            return
     try:
         with urllib.request.urlopen(EQUIP_PLUS_LATEST, timeout=30) as r:
             rel = json.load(r)
@@ -667,10 +674,13 @@ def settings_menu(s):
     say("  1. Run setup again (kit, client, project, server)")
     say(f"  2. 3D armour pieces: currently {'ON' if s.get('armor_pieces') else 'OFF'} "
         "(boots, gloves, legs, robe skirts - these fit HD bodies only)")
-    say("  3. Back")
-    c = ask("Choose", "3")
+    say("  3. Update Equip Plus to the latest release")
+    say("  4. Back")
+    c = ask("Choose", "4")
     if c == "1":
         setup(s)
+    elif c == "3":
+        check_equip_plus(s, update=True)
     elif c == "2":
         s["armor_pieces"] = not s.get("armor_pieces")
         save_settings(s)

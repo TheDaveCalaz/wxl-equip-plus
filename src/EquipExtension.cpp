@@ -1312,17 +1312,23 @@ r.count = static_cast<uint16_t>(collN);
     static bool ContainsCI(const char* s, const char* needle) noexcept
     {
         if (!s || !needle || !*needle) return false;
+        // wxl-equip-plus fix: the inherited loop advanced both pointers before comparing, so a
+        // mismatch on the needle's LAST character still left *b == '\0' and reported a match --
+        // "_shoulder_right" "contained" "_shoulder_l", which hung both pauldrons on the left
+        // shoulder. Compare first, advance only on a match.
         for (const char* p = s; *p; ++p)
         {
             const char* a = p;
             const char* b = needle;
             while (*a && *b)
             {
-                char ca = *a++;
-                char cb = *b++;
+                char ca = *a;
+                char cb = *b;
                 if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
                 if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
                 if (ca != cb) break;
+                ++a;
+                ++b;
             }
             if (!*b) return true;
         }
