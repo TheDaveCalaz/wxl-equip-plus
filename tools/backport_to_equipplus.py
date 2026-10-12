@@ -41,16 +41,24 @@ from mpqread import MpqReader  # noqa: E402
 CSV_HEADER = ["DisplayID", "ItemID", "Slot", "Layer", "Side", "Folder", "Model", "Texture", "Geosets",
               "Attach", "SuffixPolicy", "TexturePolicy", "Flags"]
 
-# kit slot name -> (Equip Plus slot name, folder under Item\ObjectComponents, attachment or "" for default)
-SLOTS = {
-    "waist": ("Waist", "Waist", "53"),
-    "chest": ("Chest", "Collections", ""),
-    "legs": ("Legs", "Collections", ""),
-    "feet": ("Feet", "Collections", ""),
-    "hands": ("Hands", "Collections", ""),
-    "wrist": ("Wrist", "Collections", ""),
-    "back": ("Back", "Collections", ""),
-}
+# kit slot name -> Equip Plus slot name
+SLOTS = {"waist": "Waist", "chest": "Chest", "legs": "Legs", "feet": "Feet", "hands": "Hands",
+         "wrist": "Wrist", "back": "Back"}
+
+# How a piece is attached depends on the piece, not just its slot:
+#  * a piece skinned to retail's bones (boot shells, gauntlets, a skirt, most modern belts) is a COLLECTION:
+#    Equip Plus binds it to the body's skeleton by bone name, so it bends with the body;
+#  * a rigid, race-agnostic piece (Lionguard's buckle) hangs on one attachment point. Equip Plus allows
+#    rigid models on the waist (belt buckle, 53) and back (12); on the other body slots it only draws
+#    collections, so rigid pieces there go the collection route too.
+RIGID_ATTACH = {"waist": ("Waist", "53"), "back": ("Cape", "12")}
+
+
+def placement(slot, skinned):
+    """(folder under Item\\ObjectComponents, Attach column) for one piece."""
+    if not skinned and slot in RIGID_ATTACH:
+        return RIGID_ATTACH[slot]
+    return "Collections", ""
 
 MAX_TEXTURE_EDGE = 1024  # the 3.3.5a client's limit, as the kit uses
 
@@ -270,20 +278,22 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
             if not new_id:
                 problems.append(f"display {retail}: no new display id in ids.json (run the kit's `tables`)")
                 continue
-            ep_slot, folder_root, attach = SLOTS[slot]
+            ep_slot = SLOTS[slot]
             pieces = [p for p in entry.get("pieces", []) if not p.get("error")]
             skinned = [p for p in pieces if p.get("skinned_to_retail_bones")]
             if skinned and not armor_pieces:
                 skipped_slots[f"{slot} (skinned, needs --armor-pieces)"] = \
                     skipped_slots.get(f"{slot} (skinned, needs --armor-pieces)", 0) + 1
                 continue
-            folder = f"{folder_root}\\{kit.ns}"
             by_stem = {}
             for p in pieces:
                 stem, base = equip_plus_name(p["model"], p["prefix"], p["sex"])
                 by_stem.setdefault((p.get("k", 0), stem), []).append((p, base))
 
             for (k, stem), group in sorted(by_stem.items()):
+                # every cut of one stem is the same kind of piece; treat it as skinned if any cut is
+                folder_root, attach = placement(slot, any(p.get("skinned_to_retail_bones") for p, _ in group))
+                folder = f"{folder_root}\\{kit.ns}"
                 texture_name = ""
                 needs_item_texture = False
                 for p, base in group:

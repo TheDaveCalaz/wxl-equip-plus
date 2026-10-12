@@ -8,6 +8,11 @@
   the left shoulder. The same fault could misplace any model whose name nearly matched another slot's
   naming rule. Found from an in-game log of the Lionguard set.
 - Backport Helper: **Settings > Update Equip Plus** replaces an installed copy with the latest release.
+- Converter: **a belt rigged to the skeleton is no longer drawn twice.** Belts were always hung rigidly on
+  the belt-buckle point, which is right for a simple buckle (Lionguard) but not for a belt skinned to
+  retail's bones (Forsaken heritage): that one also appeared floating behind the shoulders in its bind
+  pose. Placement now follows the piece - rigged pieces bind to the skeleton, rigid ones hang on the
+  waist (53) or back (12) point.
 - Backport Helper: when a build fails only because some looks have **nothing a stock client can draw**
   (a purely 3D back piece such as the Forsaken heritage Backtomb, or a quiver), it lists them and offers to
   leave them out, then finishes the build. The choice is remembered, so adding more sets later does not
