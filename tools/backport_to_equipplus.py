@@ -17,7 +17,7 @@ This tool reads that export and writes an open-folder patch, `Data/patch-<L>.MPQ
 
 Run it after the kit's `pack` step:
 
-    python backport_to_equipplus.py --work C:\\Backport\\Lionguard
+    python backport_to_equipplus.py --work C:\\Backport\\MyProject
 
 and copy the folder it reports into the client's `Data` folder. By default only belts are converted:
 they are race-agnostic models on the belt-buckle point and fit every body. The other pieces are skinned

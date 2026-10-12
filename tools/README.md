@@ -7,7 +7,7 @@ Everything below is what it does for you; you only need the individual tools if 
 by hand.
 
 First run: it asks for the kit's folder (and offers to download the kit), your client's `Data` folder, the
-kit project to use (`C:\Backport\Lionguard` keeps what you already have), and optionally your server's
+kit project to use (point it at an existing project to keep what you already have), and optionally your server's
 `dbc` folder and database details. Settings are saved in `%USERPROFILE%\.wxl-equip-plus\helper.json`;
 your database password never is.
 
@@ -31,7 +31,7 @@ main project's scan and download cache, then stages models, textures, table rows
 `<work>\out\equip-plus-rescue\`, which the converter and merger pick up.
 
 ```powershell
-python tools\rescue_left_out.py --work C:\Backport\Lionguard --kit C:\Tools\wow-retail-backport\wow-retail-backport
+python tools\rescue_left_out.py --work C:\Backport\MyProject --kit C:\Tools\wow-retail-backport\wow-retail-backport
 ```
 
 ## `backport_to_equipplus.py` - retail sets from the backport kit, in 3D
@@ -45,7 +45,7 @@ colourway texture each piece needs. This tool turns that export into a folder pa
 run through `pack` with `build --extension`.
 
 ```powershell
-python tools\backport_to_equipplus.py --work C:\Backport\Lionguard
+python tools\backport_to_equipplus.py --work C:\Backport\MyProject
 ```
 
 It writes `<work>\out\equip-plus\patch-<L>.MPQ\` - a folder, which the client mounts exactly like an
@@ -77,7 +77,7 @@ copying the kit's files over them deletes those rows. This tool starts from the 
 changes only the rows the kit assigned:
 
 ```powershell
-python tools\merge_server_dbc.py --work C:\Backport\Lionguard --server C:\AzerothCore\dbc
+python tools\merge_server_dbc.py --work C:\Backport\MyProject --server C:\AzerothCore\dbc
 ```
 
 It reads the server folder but never writes to it: merged copies go to `<work>\out\server-dbc\`. Stock
@@ -91,16 +91,16 @@ set of extended tables can win. Add to it rather than starting another:
 
 ```powershell
 cd C:\Tools\wow-retail-backport\wow-retail-backport\scripts
-python bp.py select  --work C:\Backport\Lionguard --add --set <id> [--family]
-python bp.py fetch   --work C:\Backport\Lionguard
-python bp.py newtech --work C:\Backport\Lionguard
-python bp.py measure --work C:\Backport\Lionguard
-python bp.py build   --work C:\Backport\Lionguard --extension
-python bp.py tables  --work C:\Backport\Lionguard
-python bp.py audit   --work C:\Backport\Lionguard
-python bp.py prove-gates --work C:\Backport\Lionguard
-python bp.py pack    --work C:\Backport\Lionguard
-python bp.py sheet   --work C:\Backport\Lionguard
+python bp.py select  --work C:\Backport\MyProject --add --set <id> [--family]
+python bp.py fetch   --work C:\Backport\MyProject
+python bp.py newtech --work C:\Backport\MyProject
+python bp.py measure --work C:\Backport\MyProject
+python bp.py build   --work C:\Backport\MyProject --extension
+python bp.py tables  --work C:\Backport\MyProject
+python bp.py audit   --work C:\Backport\MyProject
+python bp.py prove-gates --work C:\Backport\MyProject
+python bp.py pack    --work C:\Backport\MyProject
+python bp.py sheet   --work C:\Backport\MyProject
 ```
 
 **Do not re-run `scan`** while the kit's patch is in your `Data` folder: scan would read the patch's own

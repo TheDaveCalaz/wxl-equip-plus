@@ -19,7 +19,7 @@ body region, only a retail 3D piece. With Equip Plus installed the client CAN dr
 
 Which looks: the ones the Backport Helper recorded as left out (<work>/helper-excluded.json), or --display.
 
-    python rescue_left_out.py --work C:\\Backport\\Lionguard --kit C:\\Tools\\wow-retail-backport
+    python rescue_left_out.py --work C:\\Backport\\MyProject --kit C:\\Tools\\wow-retail-backport
 
 Python 3.9+, standard library only (the kit itself needs numpy and Pillow, as always).
 """

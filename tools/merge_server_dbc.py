@@ -14,7 +14,7 @@ simply copied over. This tool starts from the server's own files and changes onl
 Nothing on the server is touched. Merged copies go to `<work>/out/server-dbc/` (or `--out`); back up
 the server's `dbc` folder, copy them in, run the kit's `item_template.sql`, restart the worldserver.
 
-    python merge_server_dbc.py --work C:\\Backport\\Lionguard --server "C:\\AzerothCore\\dbc"
+    python merge_server_dbc.py --work C:\\Backport\\MyProject --server "C:\\AzerothCore\\dbc"
 
 Python 3.9+, standard library only.
 """

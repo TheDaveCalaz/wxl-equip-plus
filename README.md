@@ -130,7 +130,7 @@ ships a converter that turns that export into a ready-to-copy folder patch - mod
 textures included, CSV rows written:
 
 ```powershell
-python tools\backport_to_equipplus.py --work C:\Backport\Lionguard
+python tools\backport_to_equipplus.py --work C:\Backport\MyProject
 ```
 
 See [`tools/README.md`](tools/README.md).

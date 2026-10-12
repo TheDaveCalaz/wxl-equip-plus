@@ -252,7 +252,7 @@ def setup(s):
     say()
     while True:
         data = ask("Where is your WoW client's Data folder (it holds common.MPQ)?",
-                   s.get("client_data") or r"D:\WrathClient\Data")
+                   s.get("client_data") or r"C:\WoW335\Data")
         if os.path.isdir(data) and any(f.lower() == "common.mpq" for f in os.listdir(data)):
             break
         say("That folder has no common.MPQ, so it is not a 3.3.5a Data folder. Try again.")
@@ -261,7 +261,7 @@ def setup(s):
     # the project
     say()
     say("The project folder is where the kit keeps everything you backport. Use ONE for everything.")
-    work = ask("Project folder (an existing one, or a new name)?", s.get("work") or r"C:\Backport\Lionguard")
+    work = ask("Project folder (an existing one, or a new name)?", s.get("work") or r"C:\Backport\MyProject")
     s["work"] = os.path.abspath(work)
     save_settings(s)
     if not os.path.isfile(os.path.join(s["work"], "bp.json")):
