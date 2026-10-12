@@ -137,6 +137,41 @@ def m2_texture_paths(data):
     return out
 
 
+# Geoset groups (geoset id // 100) each slot's 3D piece may draw. Retail cuts one outfit file per race and
+# leaves it to each item to show only its own groups; when the kit hands over a cut that still holds other
+# slots' parts (seen on the Forsaken heritage gloves and chestguard: belt, boots and gloves inside the
+# chest file), Equip Plus would draw the whole outfit for each piece. A Geosets filter on the CSV row
+# keeps each piece to its own groups.
+SLOT_GEOSET_GROUPS = {
+    "chest": {8, 10, 13, 22, 28},   # sleeves, undershirt, robe skirt, chest attachments, chest 28xx
+    "legs": {9, 11, 13},             # kneepads, trousers, robe-length legs
+    "feet": {5, 20},                 # boots, boot attachments
+    "hands": {4, 23},                # gloves, hand attachments
+    "wrist": {8},                    # sleeves / bracers
+    "waist": {18},                   # belt
+    "back": {15},                    # cloak
+}
+
+
+def skin_geosets(skin):
+    """Geoset ids (skin section ids) a .skin draws."""
+    if skin[:4] != b"SKIN":
+        return set()
+    n, off = struct.unpack_from("<II", skin, 4 + 8 * 3)
+    return {struct.unpack_from("<H", skin, off + i * 48)[0] for i in range(n)}
+
+
+def geoset_filter(slot, ids):
+    """Geosets column for a piece: '' when the model holds only this slot's parts, else the ids to keep."""
+    groups = SLOT_GEOSET_GROUPS.get(slot)
+    if not groups or not ids:
+        return ""
+    keep = {g for g in ids if g // 100 in groups}
+    if not keep or keep == {g for g in ids if g != 0}:
+        return ""
+    return ",".join(str(g) for g in sorted(keep))
+
+
 def m2_uses_item_texture(data):
     n, off = struct.unpack_from("<II", data, 0x50)
     return any(struct.unpack_from("<I", data, off + i * 16)[0] == 2 for i in range(n))
@@ -206,7 +241,17 @@ def equip_plus_name(kit_model_path, prefix, sex):
     # one stem and one CSV row.
     word = "female" if sex == "F" else "male"
     stem = re.sub(r"_%s(?=_|$)" % word, "", stem, count=1, flags=re.I)
+    # Newer retail cuts carry the race and sex retail's way instead ("..._sc_m..."), and a race with no cut
+    # of its own borrows another race's (a Human wearing the Undead cut keeps "_sc_m"). The file itself is
+    # already per race and sex (the "_<Race><Sex>" suffix), so drop any such tag: one stem, one CSV row.
+    stem = re.sub(r"_(%s)_[mf](?=_|$)" % "|".join(sorted(RACE_TAGS)), "", stem, count=1, flags=re.I)
     return stem, f"{stem}{token}"
+
+
+# Two-letter race codes retail and the 3.3.5a client use in model names (client prefixes, lowercased).
+RACE_TAGS = {"hu", "or", "dw", "ni", "sc", "ta", "gn", "tr", "go", "be", "dr", "fo", "na", "br", "sk", "vr",
+             "tu", "ft", "wt", "ns", "it", "wo", "pa", "nb", "hn", "lf", "vm", "dh", "ma", "kt", "vu", "dt",
+             "ea", "zt", "mh", "ko", "dv", "ea"}
 
 
 def safe_component(text):
@@ -296,6 +341,7 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
                 folder = f"{folder_root}\\{kit.ns}"
                 texture_name = ""
                 needs_item_texture = False
+                geosets_present = set()
                 for p, base in group:
                     src = p["model"]
                     model = mpq.read(src)
@@ -303,6 +349,7 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
                     dest = f"Item\\ObjectComponents\\{folder}\\{base}"
                     files[dest + ".m2"] = model
                     files[dest + "00.skin"] = skin
+                    geosets_present |= skin_geosets(skin)
                     needs_item_texture |= m2_uses_item_texture(model)
                     for tex in m2_texture_paths(model):
                         if tex not in files:
@@ -327,7 +374,8 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
                     files[f"Item\\ObjectComponents\\{folder}\\{texture_name}.blp"] = blp
                 rows.append({
                     "DisplayID": new_id, "ItemID": "", "Slot": ep_slot, "Layer": "Base", "Side": "C",
-                    "Folder": folder, "Model": f"{stem}.mdx", "Texture": texture_name, "Geosets": "",
+                    "Folder": folder, "Model": f"{stem}.mdx", "Texture": texture_name,
+                    "Geosets": geoset_filter(slot, geosets_present),
                     "Attach": attach, "SuffixPolicy": "Legacy", "TexturePolicy": "Exact", "Flags": "",
                 })
 

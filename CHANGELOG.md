@@ -8,6 +8,13 @@
   the left shoulder. The same fault could misplace any model whose name nearly matched another slot's
   naming rule. Found from an in-game log of the Lionguard set.
 - Backport Helper: **Settings > Update Equip Plus** replaces an installed copy with the latest release.
+- Converter: **a piece no longer drags the rest of the outfit with it.** Retail keeps a whole outfit in one
+  file per race; the backport kit's cut of the Forsaken heritage gloves and chestguard still held the belt,
+  boots and gloves, so each of those pieces drew a second copy of all of them (doubled straps, extra
+  claws). Each CSV row now carries a geoset filter whenever its model holds other slots' parts, keeping
+  the piece to its own groups. Clean pieces - all of Lionguard - get no filter and are unchanged.
+- Converter: retail's own race-and-sex tag in newer file names (`_sc_m`, including borrowed cuts) is
+  dropped, so each look gets one CSV row instead of one per sex.
 - Converter: **a belt rigged to the skeleton is no longer drawn twice.** Belts were always hung rigidly on
   the belt-buckle point, which is right for a simple buckle (Lionguard) but not for a belt skinned to
   retail's bones (Forsaken heritage): that one also appeared floating behind the shoulders in its bind
