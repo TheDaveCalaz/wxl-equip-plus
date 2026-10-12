@@ -1,7 +1,7 @@
 # Builds wxl-equip-plus.dll against wxl-core's build shell. Every push to main publishes it as a GitHub
-# Release (which is what the WXL Hub installs); pull requests and manual runs only build, so a broken
-# change is caught before it ships. wxl-core is checked out fresh each run (branch v1.1) and this
-# extension's source is copied into core/extensions/wxl-equip-plus/, where wxl-core's root
+# Release (which is what the WXL Hub installs); pull requests, manual runs and the weekly scheduled run
+# only build, so a broken change -- ours or core's -- is caught before it ships. wxl-core is checked
+# out fresh each run (branch v1.1) and this extension's source is copied into core/extensions/wxl-equip-plus/, where wxl-core's root
 # CMakeLists.txt auto-discovers it as a build target -- no CMakeLists.txt of our own needed. The release
 # tag tracks wxl.json's version, so pushing without bumping it updates the existing release in place.
 name: Build and Release
@@ -11,6 +11,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Weekly build against the newest wxl-core v1.1, so a core change that breaks this extension shows up
+  # as a failed run (GitHub emails the repository owner) before anyone installs a broken build.
+  # Scheduled runs only build; they never publish.
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: write   # needed to publish a Release
