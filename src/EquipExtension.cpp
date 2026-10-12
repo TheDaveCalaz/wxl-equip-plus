@@ -299,8 +299,12 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
 
     // ─── Debug logging ───────────────────────────────────────────────────────────
 
+    // -1 follows the environment variable / flag file below; 0 or 1 is a choice made in the overlay panel.
+    static int g_logOverride = -1;
+
     static bool EquipLogEnabled() noexcept
     {
+        if (g_logOverride >= 0) return g_logOverride != 0;
         static int enabled = []() noexcept -> int {
 #pragma warning(suppress: 4996)
             const char* env = std::getenv("WXL_EQUIP_LOG");
@@ -721,6 +725,16 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
     //   2. ModelFileExists: every model, from the DBC or a CSV sidecar, must exist in the client's
     //      file layer. A missing one is skipped and logged, never loaded.
 
+    // Counters shown in the overlay panel (wxl-equip-plus). Main thread only, like everything here.
+    struct SessionStats
+    {
+        uint32_t staleIgnored   = 0; // stock helm/shoulder names ignored on other slots
+        uint32_t missingFiles   = 0; // distinct model files found missing
+        uint32_t missingSkipped = 0; // attachments skipped because their model is missing
+        uint32_t csvReloads     = 0;
+    };
+    static SessionStats g_stats;
+
     static bool StartsWithCI(const char* s, const char* prefix) noexcept; // defined below
 
     static bool IsStrayLegacyModelName(const char* stem) noexcept
@@ -751,9 +765,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
     // storage provider or redirect counts exactly as it will for the real load. The engine loads
     // models as .m2 whatever the DBC says, so a trailing .mdx is checked as .m2. Cached per path:
     // the answer cannot change while the client runs.
+    static std::unordered_map<std::string, bool> g_modelExistsCache;
+
     static bool ModelFileExists(const char* path) noexcept
     {
-        static std::unordered_map<std::string, bool> s_cache;
+        auto& s_cache = g_modelExistsCache;
         if (!path || !*path) return false;
 
         std::string key(path);
@@ -766,7 +782,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
 
         const bool exists = RawModelFileOpenable(key.c_str()) != 0;
         s_cache.emplace(key, exists);
-        if (!exists) EquipLog("  model not found, skipped: '%s'", key.c_str());
+        if (!exists)
+        {
+            ++g_stats.missingFiles;
+            EquipLog("  model not found, skipped: '%s'", key.c_str());
+        }
         return exists;
     }
 
@@ -1771,6 +1791,86 @@ r.count = static_cast<uint16_t>(collN);
         // which reads the same ini key independently.
     }
 
+    // ─── Overlay panel (wxl-equip-plus) ─────────────────────────────────────────────
+    //
+    // Drawn by WarcraftXL's overlay (F9) through the extension UI calls, so this DLL never links the
+    // interface library itself. Shows what the extension is doing this session and lets a modder
+    // reload the CSV sidecars without restarting the client.
+
+    static const WXL_Api* g_panelApi = nullptr;
+
+    // Re-reads every WXLItemDisplayModels / WXLItemDisplayModelMaterials CSV. Safe while playing: the
+    // tables are only read while an item is being equipped, and every attachment copies what it needs.
+    // The model-existence cache is cleared too, so a model added since the last check is found.
+    static void ReloadSidecars()
+    {
+        g_sidecarModels.clear();
+        g_sidecarMaterials.clear();
+        g_modelExistsCache.clear();
+        g_sidecarLoaded = false;
+        LoadSidecarModels();
+        ++g_stats.csvReloads;
+        EquipLog("panel: CSV sidecars reloaded (%zu displays with models, %zu with materials)",
+                 g_sidecarModels.size(), g_sidecarMaterials.size());
+    }
+
+    static void __cdecl DrawEquipPlusPanel(void*)
+    {
+        const WXL_Api* api = g_panelApi;
+        if (!api) return;
+        char line[256];
+
+        size_t characters = 0, models = 0;
+        for (const auto& kv : g_attached)
+        {
+            if (kv.second.empty()) continue;
+            ++characters;
+            models += kv.second.size();
+        }
+
+        LoadSidecarModels(); // no-op once loaded; makes the counts below meaningful before any equip
+        std::snprintf(line, sizeof(line), "CSV sidecars: %zu displays with models, %zu with materials",
+                      g_sidecarModels.size(), g_sidecarMaterials.size());
+        api->UiText(line);
+        std::snprintf(line, sizeof(line), "Attached now: %zu models on %zu characters", models, characters);
+        api->UiText(line);
+
+        api->UiSeparator();
+        api->UiText("Protection this session");
+        std::snprintf(line, sizeof(line), "  Stale stock helm/shoulder names ignored: %u", g_stats.staleIgnored);
+        api->UiText(line);
+        std::snprintf(line, sizeof(line), "  Missing model files: %u (attachments skipped: %u)",
+                      g_stats.missingFiles, g_stats.missingSkipped);
+        api->UiText(line);
+
+        api->UiSeparator();
+        int log = EquipLogEnabled() ? 1 : 0;
+        if (api->UiCheckbox("Write WarcraftXL_equip.log", &log))
+            g_logOverride = log;
+        if (api->UiButton("Reload CSV files"))
+            ReloadSidecars();
+        if (g_stats.csvReloads)
+        {
+            std::snprintf(line, sizeof(line), "Reloaded %u time(s). Re-equip an item to see a change on it.",
+                          g_stats.csvReloads);
+            api->UiText(line);
+        }
+        else
+        {
+            api->UiText("Edit a CSV, reload, then re-equip the item to see the change.");
+        }
+    }
+
+    void InstallPanel(const WXL_Api* api)
+    {
+        // UiAddPanel is part of the first WXL_Api; checking the table size keeps an older core safe.
+        if (!api || api->structSize < offsetof(WXL_Api, UiAddPanel) + sizeof(api->UiAddPanel)
+            || !api->UiAddPanel)
+            return;
+        g_panelApi = api;
+        api->UiAddPanel("Equip Plus", &DrawEquipPlusPanel, nullptr);
+    }
+
     // ─── Path builders ────────────────────────────────────────────────────────────
 
     // Builds the virtual M2 path: "Item\ObjectComponents\<folder>\[<stem>\]<stem>_<race>[_]<gender>.mdx"
@@ -2768,6 +2868,7 @@ r.count = static_cast<uint16_t>(collN);
                 if (!isCollection && a.modelSlot != 0 && a.modelSlot != 1 && !icon2Configured
                     && IsStrayLegacyModelName(stem))
                 {
+                    ++g_stats.staleIgnored;
                     EquipLog("  %s[%u]: stale stock model '%s' on slot %u (displayId=%u) ignored; "
                              "set Icon2 on the row to use it deliberately",
                              label, idx, stem, a.modelSlot, displayId);
@@ -2791,6 +2892,7 @@ r.count = static_cast<uint16_t>(collN);
                               isCollection, customFolder);
                 if (!ModelFileExists(modelPath))
                 {
+                    ++g_stats.missingSkipped;
                     EquipLog("  %s[%u]: displayId=%u slot=%u model missing, skip", label, idx,
                              displayId, a.modelSlot);
                     continue;
@@ -2874,6 +2976,7 @@ r.count = static_cast<uint16_t>(collN);
                               isCollectionPath, sc.folder[0] ? sc.folder : nullptr);
                 if (!ModelFileExists(modelPath))
                 {
+                    ++g_stats.missingSkipped;
                     EquipLog("  SC[%u]: displayId=%u slot=%u model missing, skip", sidecarIndex,
                              displayId, a.modelSlot);
                     ++sidecarIndex;
@@ -3982,6 +4085,8 @@ wxl::scripts::equipextension::InstallM2RenderHooks(api);
         static wxl::scripts::equipextension::EquipExtension       g_equip;
         static wxl::scripts::creatureextension::CreatureExtension g_creature;
         static wxl::scripts::weaponextension::WeaponExtension     g_weapon;
+
+        wxl::scripts::equipextension::InstallPanel(api);
 
         api->Log(WXL_LOG_INFO, "equip-plus", "loaded (equip + creature + weapon)");
         return 1;

@@ -73,6 +73,11 @@ The folder name and the DLL name must match; that is how WarcraftXL finds an ext
 **Optional settings:** copy `Samples and instructions\WXLExtendedEquipment.ini` into your WoW folder
 (next to `Wow.exe`) to cap the memory used by baked creature models. Without it, the defaults apply.
 
+**In-game panel:** open the WarcraftXL overlay (F9) and choose **Equip Plus**. It shows how many CSV
+rows are loaded, how many models are attached right now, and how many stale stock rows and missing model
+files it has protected you from this session. It can switch the log on and off, and **Reload CSV files**
+re-reads every sidecar without restarting the client - edit a CSV, reload, re-equip the item.
+
 **Debug logging:** off by default because it sits on very hot render paths. Create an empty file called
 `WarcraftXL_equip.log.enable` in the WoW folder, or set the environment variable `WXL_EQUIP_LOG=1`, and
 the extension writes `WarcraftXL_equip.log`.
