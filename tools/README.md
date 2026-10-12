@@ -13,6 +13,10 @@ your database password never is.
 
 Every install makes a dated backup under `<project>\backups\`, and **Undo last install** restores it.
 
+If a build stops because a look has "nothing a 3.3.5 client can draw" - a purely 3D piece such as a
+coffin on the back - the helper offers to leave that look out and finish. It remembers the choice in
+`<project>\helper-excluded.json`, and **Where things stand** lists what was left out.
+
 ## `backport_to_equipplus.py` - retail sets from the backport kit, in 3D
 
 [wow-retail-backport](https://github.com/Kirazul/wow-retail-backport) converts a retail armour set for a
