@@ -351,10 +351,97 @@ def add_something(s):
     say("-> Adding to your project ...")
     code, out = run_kit(s, *args)
     if code == 0 and passed(s, "select"):
+        n = apply_exclusions(s)
+        if n:
+            say(f"   ({n} look(s) you left out earlier stay left out)")
         say()
         say("Added. Choose 'Build' from the menu when you have added everything you want.")
     else:
         say("!! Adding failed - see above.")
+
+
+# --------------------------------------------------------------------------------------------------
+# looks left out
+#
+# The kit has no way to drop one look from a selection (`select --add` only adds), and its build keeps
+# every failed look in build/plan.json - so one look a stock client cannot draw (a purely 3D back piece,
+# a quiver) would block every later build. The helper keeps its own list of looks the user chose to leave
+# out, in <project>/helper-excluded.json, and removes them from the kit's selection and plan after every
+# change. Removing a look only takes it out of what is built; nothing the kit downloaded is deleted.
+
+def _json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def _save_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)
+
+
+def excluded(s):
+    return _json(os.path.join(s["work"], "helper-excluded.json"), {})
+
+
+def apply_exclusions(s):
+    """Remove every left-out look from the kit's selection.json and build/plan.json. Returns how many."""
+    ex = excluded(s)
+    if not ex:
+        return 0
+    removed = 0
+    sel_path = os.path.join(s["work"], "selection.json")
+    sel = _json(sel_path, None)
+    if sel:
+        for d in list(sel.get("displays", {})):
+            if d in ex:
+                del sel["displays"][d]
+                removed += 1
+        for st in sel.get("sets", {}).values():
+            st["slots"] = {k: [x for x in v if str(x) not in ex] for k, v in st.get("slots", {}).items()}
+            st["slots"] = {k: v for k, v in st["slots"].items() if v}
+        _save_json(sel_path, sel)
+    plan_path = os.path.join(s["work"], "build", "plan.json")
+    plan = _json(plan_path, None)
+    if plan:
+        for d in list(plan):
+            if d in ex:
+                del plan[d]
+        _save_json(plan_path, plan)
+    return removed
+
+
+def failed_looks(s):
+    plan = _json(os.path.join(s["work"], "build", "plan.json"), {})
+    return {d: v for d, v in plan.items() if not v.get("ok") and not str(v.get("error", "")).startswith("Encrypted")}
+
+
+def offer_to_leave_out(s):
+    """After a failed build: offer to leave the failing looks out. True if the user agreed."""
+    bad = failed_looks(s)
+    if not bad:
+        return False
+    say()
+    say(f"{len(bad)} look(s) could not be built:")
+    for d, v in sorted(bad.items(), key=lambda kv: int(kv[0])):
+        items = ",".join(str(i.get("item", i)) if isinstance(i, dict) else str(i) for i in v.get("items", []))
+        say(f"   look {d}  ({v.get('slot', '?')}{', items ' + items if items else ''}): {v.get('error', '')}")
+    say()
+    say("'Nothing a 3.3.5 client can draw' means the piece is purely 3D (a back item or quiver, say) with")
+    say("no flat texture a stock client could show instead. Everything else in your sets is fine.")
+    if not yes("Leave these looks out and carry on with the rest?"):
+        return False
+    ex = excluded(s)
+    for d, v in bad.items():
+        ex[d] = {"slot": v.get("slot"), "reason": v.get("error"), "when": now()}
+    _save_json(os.path.join(s["work"], "helper-excluded.json"), ex)
+    apply_exclusions(s)
+    say(f"Left out {len(bad)} look(s). They stay left out when you add more sets later.")
+    return True
 
 
 # --------------------------------------------------------------------------------------------------
@@ -405,13 +492,17 @@ def build(s):
         return False
     say("This runs every step in order. The first build of a big set can take a while; later builds")
     say("only redo what changed. If one step fails, the helper stops and explains.")
+    apply_exclusions(s)
     for step in STEPS:
         if passed(s, step):
             say(f"   already done: {step}")
             continue
         extra = ("--extension",) if step == "build" else ()
-        if not run_step(s, step, *extra):
-            return False
+        if run_step(s, step, *extra):
+            continue
+        if step == "build" and offer_to_leave_out(s) and run_step(s, step, *extra):
+            continue
+        return False
     sheets = os.path.join(s["work"], "sheets")
     say()
     say("Build finished. Last check, and it matters: look at the preview pictures.")
@@ -666,6 +757,10 @@ def status(s):
             say(f"   {n} (Equip Plus 3D pieces) installed: yes")
     dll = os.path.join(client_root(s), "Extensions", "wxl-equip-plus", "wxl-equip-plus.dll")
     say(f"   Equip Plus extension installed: {'yes' if os.path.isfile(dll) else 'no'}")
+    ex = excluded(s)
+    if ex:
+        say(f"   Looks left out (a stock client cannot draw them): "
+            + ", ".join(f"{d} ({v.get('slot')})" for d, v in sorted(ex.items())))
     say(f"   3D armour pieces (HD bodies only): {'included' if s.get('armor_pieces') else 'belts only'}")
 
 

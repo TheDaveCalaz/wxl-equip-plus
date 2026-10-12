@@ -8,6 +8,10 @@
   the left shoulder. The same fault could misplace any model whose name nearly matched another slot's
   naming rule. Found from an in-game log of the Lionguard set.
 - Backport Helper: **Settings > Update Equip Plus** replaces an installed copy with the latest release.
+- Backport Helper: when a build fails only because some looks have **nothing a stock client can draw**
+  (a purely 3D back piece such as the Forsaken heritage Backtomb, or a quiver), it lists them and offers to
+  leave them out, then finishes the build. The choice is remembered, so adding more sets later does not
+  bring them back. The kit itself cannot drop a single look once selected.
 
 ## 1.2.0
 
