@@ -24,6 +24,13 @@ so the kit's own tables are untouched. This needs the `wxl-extended-dbc` extensi
 adds them to the patch, the server tables and the database. Rigged pieces are made for retail's bodies,
 so on stock bodies the fit can be off; **Undo last install** removes them again.
 
+**Make heritage vendors** (option 9) writes and runs `make_vendors.py`'s SQL: an Alliance vendor (990100)
+and a Horde vendor (990101) selling everything you have backported. Each heritage piece is locked to its
+own race, as on retail, priced in gold (you choose; back pieces separately) and sells back for nothing, so
+the gold leaves the economy. Extra items go in `<project>\vendor-extra.txt`. Place each vendor once in
+game with `.npc add 990100` / `.npc add 990101`. Run it again after every Install, which re-makes the
+items and so resets their prices and race locks.
+
 ## `rescue_left_out.py` - left-out looks, the long way
 
 What option 8 runs. It converts the left-out looks in a side project (`<work>\rescue`) that shares the
