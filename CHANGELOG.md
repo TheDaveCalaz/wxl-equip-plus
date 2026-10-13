@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Backport Helper: **Make heritage vendors** (menu option 9, `tools/make_vendors.py`). Writes and runs SQL
-  for an Alliance and a Horde vendor selling every backported heritage piece, each locked to its own race,
-  priced in gold and worth nothing to sell back. Extra items can be listed in `vendor-extra.txt`.
-
 ## 1.2.2
 
 - **Fixed: nothing in a cloak row ever drew.** The client hands Equip Plus the tabard on model slot 9

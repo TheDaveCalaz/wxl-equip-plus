@@ -33,7 +33,6 @@ sys.path.insert(0, HERE)
 import backport_to_equipplus as converter  # noqa: E402
 import merge_server_dbc as merger  # noqa: E402
 import rescue_left_out as rescuer  # noqa: E402
-import make_vendors as vendors  # noqa: E402
 
 SETTINGS_DIR = os.path.join(os.path.expanduser("~"), ".wxl-equip-plus")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "helper.json")
@@ -625,9 +624,7 @@ def install(s):
                 shutil.copy2(os.path.join(merged, name + ".dbc"), dest)
                 record["server"].append(name + ".dbc")
                 say(f"   updated {name}.dbc")
-        if run_sql(s) and os.path.isfile(os.path.join(s["work"], "out", "sql", "vendors.sql")):
-            say("   Installing re-made the items, which resets their vendor prices and race locks:")
-            say("   choose 9 (Make heritage vendors) next to put them back.")
+        run_sql(s)
     with open(os.path.join(backup, "install.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)
     s["last_backup"] = backup
@@ -641,26 +638,25 @@ def install(s):
     return True
 
 
-def run_sql(s, files=None, question="Run the item SQL on your world database now?"):
-    if files is None:
-        files = [p for p in (os.path.join(s["work"], "out", "sql", "item_template.sql"),
-                             os.path.join(s["work"], "out", "equip-plus-rescue", "sql", "item_template.sql"))
-                 if os.path.isfile(p)]
+def run_sql(s):
+    files = [p for p in (os.path.join(s["work"], "out", "sql", "item_template.sql"),
+                         os.path.join(s["work"], "out", "equip-plus-rescue", "sql", "item_template.sql"))
+             if os.path.isfile(p)]
     if not files:
         say("!! No item_template.sql was built - skipped.")
-        return False
+        return
     say()
-    if not yes(question):
+    if not yes("Run the item SQL on your world database now?"):
         say(f"Skipped. To run it yourself: in the mysql prompt, USE {s.get('db_world', 'acore_world')}; then")
         for sql in files:
             say("SOURCE " + sql.replace("\\", "/") + ";")
-        return False
+        return
     mysql = s.get("mysql") or "mysql"
     if not (os.path.isfile(mysql) or shutil.which(mysql)):
         say(f"!! Cannot find mysql at '{mysql}'. Change it under Settings, or run the SQL yourself:")
         for sql in files:
             say("   SOURCE " + sql.replace("\\", "/") + ";")
-        return False
+        return
     pw = getpass.getpass(f"Password for {s.get('db_user')} (not shown, not stored): ")
     env = dict(os.environ, MYSQL_PWD=pw)
     for sql in files:
@@ -668,18 +664,13 @@ def run_sql(s, files=None, question="Run the item SQL on your world database now
             r = subprocess.run([mysql, "-h", s.get("db_host", "127.0.0.1"), "-P", str(s.get("db_port", "3306")),
                                 "-u", s.get("db_user", "acore"), s.get("db_world", "acore_world")],
                                stdin=f, env=env, capture_output=True, text=True)
-        what = ("brought-back items' SQL" if "equip-plus-rescue" in sql else
-                "vendor SQL" if os.path.basename(sql) == "vendors.sql" else "item SQL")
+        what = "item SQL" if "equip-plus-rescue" not in sql else "brought-back items' SQL"
         if r.returncode == 0:
             say(f"   {what} applied")
-            if os.path.basename(sql) == "vendors.sql" and r.stdout.strip():
-                rows = r.stdout.strip().splitlines()[1:]
-                say(f"   the vendors now sell {len(rows)} item(s)")
         else:
             say(f"!! The {what} did not apply:")
             say("   " + (r.stderr or r.stdout).strip().replace("\n", "\n   "))
-            return False
-    return True
+            return
 
 
 def check_equip_plus(s, update=False):
@@ -788,32 +779,6 @@ def bring_back(s):
 # --------------------------------------------------------------------------------------------------
 # status and settings
 
-def make_vendors(s):
-    title("Make heritage vendors")
-    say("This writes an Alliance vendor and a Horde vendor that sell everything you have backported.")
-    say("Each piece is locked to its own race, costs gold and sells back for nothing.")
-    say()
-    armour = ask("Price of each armour piece, in gold", str(s.get("vendor_armour_gold", 250)))
-    back = ask("Price of each back piece (such as the coffin), in gold", str(s.get("vendor_back_gold", 1000)))
-    try:
-        s["vendor_armour_gold"], s["vendor_back_gold"] = float(armour), float(back)
-    except ValueError:
-        say("!! Prices must be numbers - nothing was changed.")
-        return
-    save_settings(s)
-    say()
-    path, unknown = vendors.write_sql(s["work"], s["vendor_armour_gold"], s["vendor_back_gold"], log=say)
-    say()
-    say("To sell other items too, list their ids in this file and run this option again:")
-    say("   " + os.path.join(s["work"], "vendor-extra.txt"))
-    if run_sql(s, [path], "Run the vendor SQL on your world database now?"):
-        say()
-        say("Done. Restart the worldserver, then place each vendor where you stand in game:")
-        say(f"   Alliance:  .npc add {vendors.VENDOR_ALLIANCE}      Horde:  .npc add {vendors.VENDOR_HORDE}")
-        say("You only place them once. After later changes, .reload npc_vendor is enough.")
-    pause()
-
-
 def status(s):
     title("Where things stand")
     say(f"Project:  {s['work']}")
@@ -888,7 +853,6 @@ def main():
         say("  6. Settings")
         say("  7. Quit")
         say("  8. Bring back left-out looks  (3D pieces only Equip Plus can draw)")
-        say("  9. Make heritage vendors      (sell it all in game for gold)")
         c = ask("Choose a number", "")
         try:
             if c == "1":
@@ -907,8 +871,6 @@ def main():
                 return 0
             elif c == "8":
                 bring_back(s)
-            elif c == "9":
-                make_vendors(s)
             else:
                 continue
         except KeyboardInterrupt:
