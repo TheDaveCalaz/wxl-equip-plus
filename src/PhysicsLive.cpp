@@ -285,13 +285,7 @@ namespace wxl::scripts::equipextension::physics_live
         {
             // Name each model once (by its shared data) with the stage that stopped it; one-bone
             // models (stage 6) are the common, harmless case and are only counted.
-            if (stage == 6 && s.stem[0])
-            {
-                std::lock_guard<std::mutex> g(g_lock);
-                static std::unordered_map<void*, int> told;
-                if (told.size() < 400 && told.emplace(s.shared, stage).second)
-                    Log("physics: skip '%s' (%u bone(s): nothing to swing)", s.stem, s.boneCount);
-            }
+            if (stage == 6) { /* one bone: nothing can swing (the common case) */ }
             else if (s.shared)
             {
                 std::lock_guard<std::mutex> g(g_lock);
@@ -317,7 +311,11 @@ namespace wxl::scripts::equipextension::physics_live
             static int listed = 0;
             if (model) Log("physics: MATCH '%s' (%u bones): %zu bodies, %zu joints", s.stem, s.boneCount,
                            model->bodies.size(), model->joints.size());
-            else if (listed < 300) { ++listed; Log("physics: no row for '%s' (%u bones)", s.stem, s.boneCount); }
+            else if (listed < 100 && std::strstr(s.stem, "objectcomponents"))
+            {   // only items: doodads and creatures are expected to have no row
+                ++listed;
+                Log("physics: no row for item model '%s' (%u bones)", s.stem, s.boneCount);
+            }
         }
         else model = mi->second;
         if (!model) return;

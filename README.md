@@ -37,8 +37,10 @@ Equip Plus is a maintained, Hub-packaged continuation of two earlier projects, w
   which ported it to the 1.1 extension ABI and added weapons, creatures, CSV sidecars and equipment
   animations. This repository carries its full commit history.
 
-Also credited: [iThorgrim](https://github.com/iThorgrim) for WarcraftXL itself, and
-[Furioz420](https://github.com/Furioz420) for the original CSV sidecar implementation.
+Also credited: [iThorgrim](https://github.com/iThorgrim) for WarcraftXL itself,
+[Furioz420](https://github.com/Furioz420) for the original CSV sidecar implementation, and
+[Kirazul](https://github.com/Kirazul) for [wow-retail-backport](https://github.com/Kirazul/wow-retail-backport)
+and the port of retail's physics engine that live physics runs on (`src/physics/`, see its README).
 
 What this repository adds on top of Atraxian's port:
 
@@ -134,6 +136,32 @@ python tools\backport_to_equipplus.py --work C:\Backport\MyProject
 ```
 
 See [`tools/README.md`](tools/README.md).
+
+---
+
+## Live physics and fit (experimental)
+
+Retail moves plumes, ribbons, tassels and chains with a physics engine; 3.3.5a has none, so those parts
+stand stiffly in their modelled pose. Equip Plus can run retail's own engine (Kirazul's port) on every
+piece the converter shipped physics data for. And retail pieces rigged to retail's bodies can be fitted
+to the client's skeleton, which matters for races whose body was remodelled (Tauren especially).
+
+All three are **off by default**. Create `Extensions\wxl-equip-plus\WXLExtendedEquipment.ini`:
+
+```ini
+[Physics]
+Enabled=1          ; plumes, ribbons, chains swing (also a checkbox in the F9 panel)
+
+[Fit]
+RetargetPivots=1   ; move each part of a retail-rigged piece to the client body's matching bone
+RetargetScale=1    ; size the piece to the client skeleton (measured per piece)
+```
+
+Physics data comes from the converter (`DBFilesClient\WXLEquipPlusPhysics.phy2` in the Equip Plus patch);
+re-run Install in the Backport Helper to get it for sets you converted before 1.3.0. With
+`WarcraftXL_equip.log.enable` present, lines starting `physics:` show which pieces it found, and the F9
+panel shows what it costs per frame. Pieces whose bones the kit merged when converting (some body-space
+helms) cannot move.
 
 ---
 
