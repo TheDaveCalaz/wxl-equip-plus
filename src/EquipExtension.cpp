@@ -19,6 +19,7 @@
 #include "WeaponExtension.hpp"
 #include "WxlOffsets.hpp"
 #include "VirtualPath.hpp"
+#include "PhysicsLive.hpp"
 #include "common/Log.hpp"
 #include "engine/events/Event.hpp"
 #include "game/Binding.hpp"
@@ -1786,6 +1787,7 @@ r.count = static_cast<uint16_t>(collN);
     {
         if (g_sidecarLoaded) return;
         g_sidecarLoaded = true;
+        physics_live::LoadTable();
 
         LoadSidecarFile("WXLItemDisplayModels.csv");
         LoadSidecarFile("DBFilesClient\\WXLItemDisplayModels.csv");
@@ -1873,6 +1875,20 @@ r.count = static_cast<uint16_t>(collN);
         api->UiText(line);
 
         api->UiSeparator();
+        {
+            const physics_live::Stats ps = physics_live::GetStats();
+            int on = physics_live::Enabled() ? 1 : 0;
+            if (api->UiCheckbox("Live physics (experimental: plumes, ribbons, chains)", &on))
+                physics_live::SetEnabled(on != 0);
+            std::snprintf(line, sizeof(line), "  Physics table: %u pieces; simulating %u now",
+                          ps.tableRows, ps.live);
+            api->UiText(line);
+            std::snprintf(line, sizeof(line), "  Cost: %.3f ms last, %.3f ms worst; faults %u",
+                          ps.lastFrameMs, ps.worstFrameMs, ps.faults);
+            api->UiText(line);
+        }
+
+        api->UiSeparator();
         int log = EquipLogEnabled() ? 1 : 0;
         if (api->UiCheckbox("Write WarcraftXL_equip.log", &log))
             g_logOverride = log;
@@ -1889,6 +1905,8 @@ r.count = static_cast<uint16_t>(collN);
             api->UiText("Edit a CSV, reload, then re-equip the item to see the change.");
         }
     }
+
+    void PhysicsLogLine(const char* text) { EquipLog("%s", text); }
 
     void InstallPanel(const WXL_Api* api)
     {
@@ -4034,6 +4052,7 @@ r.count = static_cast<uint16_t>(collN);
             ev::BuildBonePaletteArgs a{ renderCtx };
             g_equipInstance->OnBuildBonePalette(a);
         }
+        physics_live::AfterBonePalette(renderCtx);
     }
 
     namespace
@@ -4115,7 +4134,9 @@ wxl::scripts::equipextension::InstallM2RenderHooks(api);
         static wxl::scripts::creatureextension::CreatureExtension g_creature;
         static wxl::scripts::weaponextension::WeaponExtension     g_weapon;
 
-        wxl::scripts::equipextension::InstallPanel(api);
+        wxl::scripts::equipextension::physics_live::SetLogger(&wxl::scripts::equipextension::PhysicsLogLine);
+        wxl::scripts::equipextension::physics_live::Init();
+                wxl::scripts::equipextension::InstallPanel(api);
 
         api->Log(WXL_LOG_INFO, "equip-plus", "loaded (equip + creature + weapon)");
         return 1;
