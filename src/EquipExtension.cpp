@@ -607,6 +607,13 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
 														  
     }
 
+    static bool RetargetPivotsEnabled() noexcept
+    {
+        static int cached = -1;
+        if (cached < 0) cached = WxlIniGetBool("Fit", "RetargetPivots", false) ? 1 : 0;
+        return cached == 1;
+    }
+
     static bool CopyRemappedBonesGuarded(uint8_t* dstBuf,
                                          uint32_t dstBoneCount,
                                          const uint8_t* srcBuf,
@@ -864,13 +871,6 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         }
     }
 
-
-    static bool RetargetPivotsEnabled() noexcept
-    {
-        static int cached = -1;
-        if (cached < 0) cached = WxlIniGetBool("Fit", "RetargetPivots", false) ? 1 : 0;
-        return cached == 1;
-    }
 
     // SEH wrapper for BuildBoneRemap's pointer walks.
     // BoneRemap is a POD struct (trivially destructible), so __try is safe inside this function.
