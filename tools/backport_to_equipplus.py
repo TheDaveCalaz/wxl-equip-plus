@@ -127,6 +127,21 @@ class KitProject:
 # --------------------------------------------------------------------------------------------------
 # M2 / BLP helpers
 
+def m2_body_space(data):
+    """True for a model authored round the whole character (its vertices sit at body height, median
+    above 0.9 yards, the kit's own test for body-space helms) rather than round one attachment point.
+    Hung on an attachment point, such a model floats a body's height away from it, so it has to be
+    drawn as a collection fitted to the skeleton even when retail made it for every race."""
+    if data[:4] != b"MD20" or len(data) < 0x44:
+        return False
+    n, o = struct.unpack_from("<II", data, 0x3C)
+    if not n or o + n * 48 > len(data):
+        return False
+    step = max(1, n // 2000)
+    zs = sorted(struct.unpack_from("<f", data, o + i * 48 + 8)[0] for i in range(0, n, step))
+    return zs[len(zs) // 2] > 0.9
+
+
 def m2_texture_paths(data):
     """Hard-coded (type 0) texture paths an MD20 model names."""
     if data[:4] != b"MD20":
@@ -340,8 +355,11 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
                 by_stem.setdefault((p.get("k", 0), stem), []).append((p, base))
 
             for (k, stem), group in sorted(by_stem.items()):
-                # every cut of one stem is the same kind of piece; treat it as skinned if any cut is
-                folder_root, attach = placement(slot, any(p.get("skinned_to_retail_bones") for p, _ in group))
+                # every cut of one stem is the same kind of piece; treat it as skinned if any cut is,
+                # or if it is built round the whole body (a race-agnostic back piece, say)
+                skinned = any(p.get("skinned_to_retail_bones") for p, _ in group) or \
+                    any(m2_body_space(mpq.read(p["model"])) for p, _ in group)
+                folder_root, attach = placement(slot, skinned)
                 folder = f"{folder_root}\\{kit.ns}"
                 texture_name = ""
                 needs_item_texture = False
