@@ -106,6 +106,12 @@ namespace wxl::scripts::equipextension
         uint8_t  collToChar[256];
         void*    collectionModel; // live M2 model this remap was built for (collection side)
         void*    characterModel;  // live M2 model this remap was built for (character/pose side)
+        // Per collection bone: the character bone's pivot minus the collection bone's pivot. A
+        // retail piece is authored round retail's skeleton; where the client body's matching bone
+        // sits elsewhere (Tauren especially), shifting the piece's vertices by this before the
+        // character's matrix puts each part where the client body has that bone. Used only when
+        // [Fit] RetargetPivots=1 in WXLExtendedEquipment.ini.
+        float    pivotDelta[256][3];
     };
 
     struct SidecarModelEntry
@@ -635,6 +641,15 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                 std::memcpy(dstBuf + bi * offsets::kBonePaletteStride,
                             srcBuf + ci * offsets::kBonePaletteStride,
                             offsets::kBonePaletteStride);
+                if (RetargetPivotsEnabled() && bi < 256)
+                {
+                    // v' = (v + d) M with row vectors: the translation row gains d through M's
+                    // rotation-scale rows.
+                    float* m = reinterpret_cast<float*>(dstBuf + bi * offsets::kBonePaletteStride);
+                    const float* d = remap.pivotDelta[bi];
+                    for (int j = 0; j < 3; ++j)
+                        m[12 + j] += d[0] * m[0 + j] + d[1] * m[4 + j] + d[2] * m[8 + j];
+                }
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -850,6 +865,13 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
     }
 
 
+    static bool RetargetPivotsEnabled() noexcept
+    {
+        static int cached = -1;
+        if (cached < 0) cached = WxlIniGetBool("Fit", "RetargetPivots", false) ? 1 : 0;
+        return cached == 1;
+    }
+
     // SEH wrapper for BuildBoneRemap's pointer walks.
     // BoneRemap is a POD struct (trivially destructible), so __try is safe inside this function.
     static BoneRemap BuildBoneRemapGuarded(void* collRc, void* charRc) noexcept
@@ -953,7 +975,20 @@ r.count = static_cast<uint16_t>(collN);
                 if (!changed) break;
             }
 
-            // If no bone was matched at all, signal "not ready" by resetting count to 0.
+            // Pivot gaps for the retarget option (see BoneRemap::pivotDelta).
+            if (charBase)
+            {
+                for (uint32_t i = 0; i < collN && i < 256; ++i)
+                {
+                    const uint8_t ci = r.collToChar[i];
+                    if (ci == 0xFF || ci >= charN) continue;
+                    const float* pc = reinterpret_cast<const float*>(collBase + i * offsets::kBoneStride + offsets::kOffBonePivot);
+                    const float* ph = reinterpret_cast<const float*>(charBase + ci * offsets::kBoneStride + offsets::kOffBonePivot);
+                    for (int k = 0; k < 3; ++k) r.pivotDelta[i][k] = ph[k] - pc[k];
+                }
+            }
+
+                        // If no bone was matched at all, signal "not ready" by resetting count to 0.
             // This happens when charBase is null (character M2 not yet parsed, e.g. initFlags=0x40).
             // count=0 causes all callers' retry guards to re-fire until the character is ready.
             {
