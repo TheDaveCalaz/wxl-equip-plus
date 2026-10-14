@@ -123,24 +123,26 @@ namespace wxl::scripts::equipextension::physics_live
 
         int ReadSnapshotStage(void* inst, Snapshot& s) noexcept
         {
+            // The shared model and its path first, so a later failure can name the model.
             uint8_t* i = static_cast<uint8_t*>(inst);
             void* scene = nullptr;
             void* header = nullptr;
             void* boneArr = nullptr;
+            s.stem[0] = 0;
             if (!SafeReadPtr(i + kOffInstShared, &s.shared) || !s.shared) return 1;
-            if (!SafeReadPtr(i + kOffInstScene, &scene) || !scene) return 2;
-            if (!SafeReadPtr(i + kOffInstPalette, reinterpret_cast<void**>(&s.palette)) || !s.palette) return 3;
             uint8_t* sh = static_cast<uint8_t*>(s.shared);
+            if (!SafeCopy(s.stem, sh + kOffModelStem, sizeof(s.stem) - 1)) { s.stem[0] = 0; return 11; }
+            s.stem[sizeof(s.stem) - 1] = 0;
             if (!SafeReadPtr(sh + kOffModelHeader, &header) || !header) return 4;
             uint8_t* hd = static_cast<uint8_t*>(header);
             if (!SafeCopy(&s.boneCount, hd + kOffHdrBones, 4)) return 5;
             if (s.boneCount < 2 || s.boneCount > kMaxBones) return 6;   // one bone: nothing can swing
+            if (!SafeReadPtr(i + kOffInstScene, &scene) || !scene) return 2;
+            if (!SafeReadPtr(i + kOffInstPalette, reinterpret_cast<void**>(&s.palette)) || !s.palette) return 3;
             if (!SafeReadPtr(hd + kOffHdrBoneArr, &boneArr) || !boneArr) return 7;
             if (!SafeCopy(&s.clock, static_cast<uint8_t*>(scene) + kOffSceneClock, 4)) return 8;
             if (!SafeCopy(s.sceneMat, static_cast<uint8_t*>(scene) + kOffSceneMatrix, sizeof(s.sceneMat))) return 9;
             if (!SafeCopy(s.ownMat, i + kOffInstOwnMat, sizeof(s.ownMat))) return 10;
-            if (!SafeCopy(s.stem, sh + kOffModelStem, sizeof(s.stem) - 1)) return 11;
-            s.stem[sizeof(s.stem) - 1] = 0;
             return 0;
         }
 
@@ -281,9 +283,22 @@ namespace wxl::scripts::equipextension::physics_live
         const int stage = ReadSnapshotStage(instance, s);
         if (stage)
         {
-            static volatile long seen[16] = {};
-            if (stage < 16 && InterlockedIncrement(&seen[stage]) == 1)
-                Log("physics: an instance was skipped at read stage %d (first time only)", stage);
+            // Name each model once (by its shared data) with the stage that stopped it; one-bone
+            // models (stage 6) are the common, harmless case and are only counted.
+            if (stage == 6 && s.stem[0])
+            {
+                std::lock_guard<std::mutex> g(g_lock);
+                static std::unordered_map<void*, int> told;
+                if (told.size() < 400 && told.emplace(s.shared, stage).second)
+                    Log("physics: skip '%s' (%u bone(s): nothing to swing)", s.stem, s.boneCount);
+            }
+            else if (s.shared)
+            {
+                std::lock_guard<std::mutex> g(g_lock);
+                static std::unordered_map<void*, int> told;
+                if (told.size() < 400 && told.emplace(s.shared, stage).second)
+                    Log("physics: skip '%s' at read stage %d", s.stem[0] ? s.stem : "(no path)", stage);
+            }
             return;
         }
 
