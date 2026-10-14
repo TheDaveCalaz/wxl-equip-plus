@@ -112,6 +112,11 @@ namespace wxl::scripts::equipextension
         // character's matrix puts each part where the client body has that bone. Used only when
         // [Fit] RetargetPivots=1 in WXLExtendedEquipment.ini.
         float    pivotDelta[256][3];
+        // [Fit] RetargetScale=1: the client skeleton's size over the piece's skeleton, fitted over
+        // the bones matched by name (1 when off or not measurable). With it, a vertex v of bone b
+        // goes to s * v + (charPivot - s * collPivot) before the character's matrix.
+        float    fitScale;
+        float    fitOffset[256][3];
     };
 
     struct SidecarModelEntry
@@ -614,6 +619,13 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         return cached == 1;
     }
 
+    static bool RetargetScaleEnabled() noexcept
+    {
+        static int cached = -1;
+        if (cached < 0) cached = WxlIniGetBool("Fit", "RetargetScale", false) ? 1 : 0;
+        return cached == 1;
+    }
+
     static bool CopyRemappedBonesGuarded(uint8_t* dstBuf,
                                          uint32_t dstBoneCount,
                                          const uint8_t* srcBuf,
@@ -648,14 +660,19 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                 std::memcpy(dstBuf + bi * offsets::kBonePaletteStride,
                             srcBuf + ci * offsets::kBonePaletteStride,
                             offsets::kBonePaletteStride);
-                if (RetargetPivotsEnabled() && bi < 256)
+                if (bi < 256 && (RetargetPivotsEnabled() || RetargetScaleEnabled()))
                 {
-                    // v' = (v + d) M with row vectors: the translation row gains d through M's
-                    // rotation-scale rows.
+                    // v' = (s v + d) M with row vectors: the translation row gains d through M's
+                    // rotation-scale rows (taken before scaling), then those rows are scaled by s.
                     float* m = reinterpret_cast<float*>(dstBuf + bi * offsets::kBonePaletteStride);
-                    const float* d = remap.pivotDelta[bi];
+                    const bool scale = RetargetScaleEnabled();
+                    const float sc = scale ? remap.fitScale : 1.0f;
+                    const float* d = scale ? remap.fitOffset[bi] : remap.pivotDelta[bi];
                     for (int j = 0; j < 3; ++j)
                         m[12 + j] += d[0] * m[0 + j] + d[1] * m[4 + j] + d[2] * m[8 + j];
+                    if (sc != 1.0f)
+                        for (int j = 0; j < 12; ++j)
+                            if ((j & 3) != 3) m[j] *= sc;
                 }
             }
         }
@@ -957,6 +974,9 @@ r.count = static_cast<uint16_t>(collN);
                 }
             }
 
+            bool direct[256] = {};
+            for (uint32_t i = 0; i < collN && i < 256; ++i) direct[i] = r.collToChar[i] != 0xFF;
+
             // Accessory chains in paper-doll collection models can be deeper than eight bones.
             for (uint32_t pass = 0; pass < collN; ++pass)
             {
@@ -975,20 +995,59 @@ r.count = static_cast<uint16_t>(collN);
                 if (!changed) break;
             }
 
-            // Pivot gaps for the retarget option (see BoneRemap::pivotDelta).
+            // Pivot gaps and size ratio for the retarget options (see BoneRemap::pivotDelta).
+            r.fitScale = 1.0f;
             if (charBase)
             {
+                double cr[3] = {}, cs[3] = {};
+                uint32_t n = 0;
+                for (uint32_t i = 0; i < collN && i < 256; ++i)
+                {
+                    const uint8_t ci = r.collToChar[i];
+                    if (ci == 0xFF || ci >= charN || !direct[i]) continue;
+                    const float* pc = reinterpret_cast<const float*>(collBase + i * offsets::kBoneStride + offsets::kOffBonePivot);
+                    const float* ph = reinterpret_cast<const float*>(charBase + ci * offsets::kBoneStride + offsets::kOffBonePivot);
+                    for (int k = 0; k < 3; ++k) { cr[k] += pc[k]; cs[k] += ph[k]; }
+                    ++n;
+                }
+                if (n >= 4)
+                {
+                    for (int k = 0; k < 3; ++k) { cr[k] /= n; cs[k] /= n; }
+                    double num = 0, den = 0;
+                    for (uint32_t i = 0; i < collN && i < 256; ++i)
+                    {
+                        const uint8_t ci = r.collToChar[i];
+                        if (ci == 0xFF || ci >= charN || !direct[i]) continue;
+                        const float* pc = reinterpret_cast<const float*>(collBase + i * offsets::kBoneStride + offsets::kOffBonePivot);
+                        const float* ph = reinterpret_cast<const float*>(charBase + ci * offsets::kBoneStride + offsets::kOffBonePivot);
+                        for (int k = 0; k < 3; ++k)
+                        {
+                            num += (pc[k] - cr[k]) * (ph[k] - cs[k]);
+                            den += (pc[k] - cr[k]) * (pc[k] - cr[k]);
+                        }
+                    }
+                    if (den > 1e-6)
+                    {
+                        const double fit = num / den;
+                        if (fit > 0.25 && fit < 4.0) r.fitScale = static_cast<float>(fit);
+                    }
+                }
                 for (uint32_t i = 0; i < collN && i < 256; ++i)
                 {
                     const uint8_t ci = r.collToChar[i];
                     if (ci == 0xFF || ci >= charN) continue;
                     const float* pc = reinterpret_cast<const float*>(collBase + i * offsets::kBoneStride + offsets::kOffBonePivot);
                     const float* ph = reinterpret_cast<const float*>(charBase + ci * offsets::kBoneStride + offsets::kOffBonePivot);
-                    for (int k = 0; k < 3; ++k) r.pivotDelta[i][k] = ph[k] - pc[k];
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        r.pivotDelta[i][k] = ph[k] - pc[k];
+                        r.fitOffset[i][k] = ph[k] - r.fitScale * pc[k];
+                    }
                 }
+                EquipLog("  BuildBoneRemap: fit over %u named bones: client/piece size %.3f", n, r.fitScale);
             }
 
-                        // If no bone was matched at all, signal "not ready" by resetting count to 0.
+            // If no bone was matched at all, signal "not ready" by resetting count to 0.
             // This happens when charBase is null (character M2 not yet parsed, e.g. initFlags=0x40).
             // count=0 causes all callers' retry guards to re-fire until the character is ready.
             {
