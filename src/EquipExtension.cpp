@@ -3004,6 +3004,13 @@ r.count = static_cast<uint16_t>(collN);
                     (sc.folder[0] && StartsWithCI(sc.folder, "Collections")) ||
                     sc.geoFilter.count > 0 ||
                     StartsWithCI(sc.model, "collections_");
+                // A collection row that names no attachment hangs on the character root, as the DBC
+                // path does for collections (attachForEntry) and as the sample CSVs spell out (19).
+                // Hanging it on the slot's own point instead (the hand, for gloves) still looked
+                // right in the world, but the character window's copy of the model was never fitted
+                // to the body: only root-attached collections are re-fitted on the clone.
+                if (isCollectionPath && sc.attachId == static_cast<uint32_t>(-1))
+                    attach = kCollectionAttach;
                 if (isCollectionPath && IsCollectionGloveBodyModel(a.modelSlot, sc.model))
                     attach = kCollectionAttach;
                 if (!isCollectionPath && !SlotAllowsNormalObjectModel(a.modelSlot))

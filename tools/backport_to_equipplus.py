@@ -51,7 +51,9 @@ SLOTS = {"waist": "Waist", "chest": "Chest", "legs": "Legs", "feet": "Feet", "ha
 #    Equip Plus binds it to the body's skeleton by bone name, so it bends with the body;
 #  * a rigid, race-agnostic piece (Lionguard's buckle) hangs on one attachment point. Equip Plus allows
 #    rigid models on the waist (belt buckle, 53) and back (12); on the other body slots it only draws
-#    collections, so rigid pieces there go the collection route too.
+#    collections, so rigid pieces there go the collection route too. Collections hang on the character
+#    root (19), as Equip Plus's own sample CSVs do: on any other point the character window's copy of the
+#    piece is not fitted and floats behind the character.
 RIGID_ATTACH = {"waist": ("Waist", "53"), "back": ("Cape", "12")}
 
 
@@ -59,7 +61,7 @@ def placement(slot, skinned):
     """(folder under Item\\ObjectComponents, Attach column) for one piece."""
     if not skinned and slot in RIGID_ATTACH:
         return RIGID_ATTACH[slot]
-    return "Collections", ""
+    return "Collections", "19"   # the character root: Equip Plus fits a collection to the body by bone name
 
 MAX_TEXTURE_EDGE = 1024  # the 3.3.5a client's limit, as the kit uses
 
