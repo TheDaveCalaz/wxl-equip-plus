@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.3
+
+- **Fixed: retail-rigged pieces floating behind the character in the character window** (reported with
+  gloves). A CSV collection row with an empty Attach column was hung on its slot's own attachment point
+  (the hand, for gloves) instead of the character root (19) that collections use. In the world Equip Plus
+  still fitted the piece to the body, but the character window draws a copy of the model, and only
+  root-attached collections were fitted on that copy. Empty Attach on a collection row now means the
+  root, as it already did for DBC rows; the converter also writes 19 for collections.
+
 ## 1.2.2
 
 - **Fixed: nothing in a cloak row ever drew.** The client hands Equip Plus the tabard on model slot 9
