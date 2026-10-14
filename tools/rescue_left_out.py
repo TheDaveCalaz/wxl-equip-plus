@@ -241,9 +241,7 @@ def stage(work, side, ext, log=print):
             stem, base = conv.equip_plus_name(p["model"], p["prefix"], p["sex"])
             by_stem.setdefault((p.get("k", 0), stem), []).append((p, base))
         for (k, stem), group in sorted(by_stem.items()):
-            skinned = any(p.get("skinned_to_retail_bones") for p, _ in group) or \
-                any(conv.m2_body_space(built(p["model"])) for p, _ in group)
-            folder_root, attach = conv.placement(slot, skinned)
+            folder_root, attach = conv.placement(slot, any(p.get("skinned_to_retail_bones") for p, _ in group))
             folder = f"{folder_root}\\{ns}"
             geosets, needs_tex = set(), False
             for p, base in group:
