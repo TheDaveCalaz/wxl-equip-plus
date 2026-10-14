@@ -37,6 +37,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mpqread import MpqReader  # noqa: E402
+import physics_table  # noqa: E402
 
 CSV_HEADER = ["DisplayID", "ItemID", "Slot", "Layer", "Side", "Folder", "Model", "Texture", "Geosets",
               "Attach", "SuffixPolicy", "TexturePolicy", "Flags"]
@@ -311,6 +312,7 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
     out_root = os.path.abspath(out_root or kit.path("out", "equip-plus"))
     patch = os.path.join(out_root, patch_dir_name)
     files = {}          # archive path -> bytes
+    shipped_as = {}     # kit archive path -> the paths this patch ships the same model under
     rows = []
     problems = []
     skipped_slots = {}
@@ -350,6 +352,7 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
                     skin = mpq.read(src[:-3] + "00.skin")
                     dest = f"Item\\ObjectComponents\\{folder}\\{base}"
                     files[dest + ".m2"] = model
+                    shipped_as.setdefault(src, []).append(dest + ".m2")
                     files[dest + "00.skin"] = skin
                     geosets_present |= skin_geosets(skin)
                     needs_item_texture |= m2_uses_item_texture(model)
@@ -415,6 +418,21 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
         w.writerow(r)
     files["DBFilesClient\\WXLItemDisplayModels.csv"] = buf.getvalue().encode("utf-8")
 
+    # Retail physics for every shipped piece that has it (plumes, ribbons, chains): one table Equip Plus
+    # runs live when its physics option is on. Pieces the kit shipped in patch-X (helms, shoulders) are
+    # covered too - they are found by their own archive paths.
+    physics_models = 0
+    try:
+        prow, prep = physics_table.build_rows(kit.work, kit.retail_file, shipped_as)
+        if prow:
+            files["DBFilesClient\\WXLEquipPlusPhysics.phy2"] = physics_table.write_table(prow)
+        physics_models = prep["models"]
+        problems.extend("physics: " + x for x in prep["skipped"] if "merged" not in x)
+        merged = sum(1 for x in prep["skipped"] if "merged" in x)
+    except (OSError, ValueError) as ex:
+        merged = 0
+        problems.append(f"physics table not written: {ex}")
+
     files[MARKER] = json.dumps({"tool": "wxl-equip-plus backport_to_equipplus", "work": kit.work},
                                indent=2).encode("utf-8")
     if os.path.isdir(patch):  # a previous run: start clean so nothing stale survives
@@ -430,6 +448,9 @@ def convert(work, out_root=None, letter=None, armor_pieces=False, log=print):
     models = sum(1 for k in files if k.lower().endswith(".m2"))
     textures = sum(1 for k in files if k.lower().endswith(".blp"))
     log(f"equip-plus: {len(rows)} CSV rows, {models} models, {textures} textures -> {patch}")
+    if physics_models:
+        log(f"  physics data for {physics_models} model(s) (used when Equip Plus's live physics is on)"
+            + (f"; {merged} more cannot move because the kit merged their bones" if merged else ""))
     if rescued_rows:
         log(f"  includes {rescued_rows} row(s) for looks brought back by rescue_left_out.py, with their "
             "table rows as ItemDisplayInfo/Item .dbc1-equipplus add-ons (needs wxl-extended-dbc)")

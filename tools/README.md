@@ -69,6 +69,13 @@ stock low-poly bodies they will not fit. Add `--armor-pieces` to convert them as
 **Exit codes:** 0 done; 2 done but with problems listed (for example a colourway texture missing from
 the kit's cache - that piece is left out rather than drawn untextured); 1 failed.
 
+## `physics_table.py` - retail physics data
+
+Called by the converter: for every shipped model whose retail source has physics (.phys), it writes one
+row of a table (`DBFilesClient\WXLEquipPlusPhysics.phy2`, the "PHY2" layout the engine's own reader
+decodes) keyed by the model's archive path. Equip Plus reads it when live physics is on. Run it alone
+with `python tools\physics_table.py --work <project>` to see how many models carry physics.
+
 ## `merge_server_dbc.py` - the kit's item rows into your server's tables
 
 The kit's server tables (`<work>\out\dbc\`) are built from the client's copies. If your server's

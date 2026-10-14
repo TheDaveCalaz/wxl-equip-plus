@@ -19,6 +19,7 @@
 #include "WeaponExtension.hpp"
 #include "WxlOffsets.hpp"
 #include "VirtualPath.hpp"
+#include "PhysicsLive.hpp"
 #include "common/Log.hpp"
 #include "engine/events/Event.hpp"
 #include "game/Binding.hpp"
@@ -105,6 +106,17 @@ namespace wxl::scripts::equipextension
         uint8_t  collToChar[256];
         void*    collectionModel; // live M2 model this remap was built for (collection side)
         void*    characterModel;  // live M2 model this remap was built for (character/pose side)
+        // Per collection bone: the character bone's pivot minus the collection bone's pivot. A
+        // retail piece is authored round retail's skeleton; where the client body's matching bone
+        // sits elsewhere (Tauren especially), shifting the piece's vertices by this before the
+        // character's matrix puts each part where the client body has that bone. Used only when
+        // [Fit] RetargetPivots=1 in WXLExtendedEquipment.ini.
+        float    pivotDelta[256][3];
+        // [Fit] RetargetScale=1: the client skeleton's size over the piece's skeleton, fitted over
+        // the bones matched by name (1 when off or not measurable). With it, a vertex v of bone b
+        // goes to s * v + (charPivot - s * collPivot) before the character's matrix.
+        float    fitScale;
+        float    fitOffset[256][3];
     };
 
     struct SidecarModelEntry
@@ -600,6 +612,20 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
 														  
     }
 
+    static bool RetargetPivotsEnabled() noexcept
+    {
+        static int cached = -1;
+        if (cached < 0) cached = WxlIniGetBool("Fit", "RetargetPivots", false) ? 1 : 0;
+        return cached == 1;
+    }
+
+    static bool RetargetScaleEnabled() noexcept
+    {
+        static int cached = -1;
+        if (cached < 0) cached = WxlIniGetBool("Fit", "RetargetScale", false) ? 1 : 0;
+        return cached == 1;
+    }
+
     static bool CopyRemappedBonesGuarded(uint8_t* dstBuf,
                                          uint32_t dstBoneCount,
                                          const uint8_t* srcBuf,
@@ -634,6 +660,20 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                 std::memcpy(dstBuf + bi * offsets::kBonePaletteStride,
                             srcBuf + ci * offsets::kBonePaletteStride,
                             offsets::kBonePaletteStride);
+                if (bi < 256 && (RetargetPivotsEnabled() || RetargetScaleEnabled()))
+                {
+                    // v' = (s v + d) M with row vectors: the translation row gains d through M's
+                    // rotation-scale rows (taken before scaling), then those rows are scaled by s.
+                    float* m = reinterpret_cast<float*>(dstBuf + bi * offsets::kBonePaletteStride);
+                    const bool scale = RetargetScaleEnabled();
+                    const float sc = scale ? remap.fitScale : 1.0f;
+                    const float* d = scale ? remap.fitOffset[bi] : remap.pivotDelta[bi];
+                    for (int j = 0; j < 3; ++j)
+                        m[12 + j] += d[0] * m[0 + j] + d[1] * m[4 + j] + d[2] * m[8 + j];
+                    if (sc != 1.0f)
+                        for (int j = 0; j < 12; ++j)
+                            if ((j & 3) != 3) m[j] *= sc;
+                }
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -934,6 +974,9 @@ r.count = static_cast<uint16_t>(collN);
                 }
             }
 
+            bool direct[256] = {};
+            for (uint32_t i = 0; i < collN && i < 256; ++i) direct[i] = r.collToChar[i] != 0xFF;
+
             // Accessory chains in paper-doll collection models can be deeper than eight bones.
             for (uint32_t pass = 0; pass < collN; ++pass)
             {
@@ -950,6 +993,58 @@ r.count = static_cast<uint16_t>(collN);
                     }
                 }
                 if (!changed) break;
+            }
+
+            // Pivot gaps and size ratio for the retarget options (see BoneRemap::pivotDelta).
+            r.fitScale = 1.0f;
+            if (charBase)
+            {
+                double cr[3] = {}, cs[3] = {};
+                uint32_t n = 0;
+                for (uint32_t i = 0; i < collN && i < 256; ++i)
+                {
+                    const uint8_t ci = r.collToChar[i];
+                    if (ci == 0xFF || ci >= charN || !direct[i]) continue;
+                    const float* pc = reinterpret_cast<const float*>(collBase + i * offsets::kBoneStride + offsets::kOffBonePivot);
+                    const float* ph = reinterpret_cast<const float*>(charBase + ci * offsets::kBoneStride + offsets::kOffBonePivot);
+                    for (int k = 0; k < 3; ++k) { cr[k] += pc[k]; cs[k] += ph[k]; }
+                    ++n;
+                }
+                if (n >= 4)
+                {
+                    for (int k = 0; k < 3; ++k) { cr[k] /= n; cs[k] /= n; }
+                    double num = 0, den = 0;
+                    for (uint32_t i = 0; i < collN && i < 256; ++i)
+                    {
+                        const uint8_t ci = r.collToChar[i];
+                        if (ci == 0xFF || ci >= charN || !direct[i]) continue;
+                        const float* pc = reinterpret_cast<const float*>(collBase + i * offsets::kBoneStride + offsets::kOffBonePivot);
+                        const float* ph = reinterpret_cast<const float*>(charBase + ci * offsets::kBoneStride + offsets::kOffBonePivot);
+                        for (int k = 0; k < 3; ++k)
+                        {
+                            num += (pc[k] - cr[k]) * (ph[k] - cs[k]);
+                            den += (pc[k] - cr[k]) * (pc[k] - cr[k]);
+                        }
+                    }
+                    if (den > 1e-6)
+                    {
+                        const double fit = num / den;
+                        if (fit > 0.25 && fit < 4.0) r.fitScale = static_cast<float>(fit);
+                    }
+                }
+                for (uint32_t i = 0; i < collN && i < 256; ++i)
+                {
+                    const uint8_t ci = r.collToChar[i];
+                    if (ci == 0xFF || ci >= charN) continue;
+                    const float* pc = reinterpret_cast<const float*>(collBase + i * offsets::kBoneStride + offsets::kOffBonePivot);
+                    const float* ph = reinterpret_cast<const float*>(charBase + ci * offsets::kBoneStride + offsets::kOffBonePivot);
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        r.pivotDelta[i][k] = ph[k] - pc[k];
+                        r.fitOffset[i][k] = ph[k] - r.fitScale * pc[k];
+                    }
+                }
+                EquipLog("  BuildBoneRemap: fit over %u named bones: client/piece size %.3f", n, r.fitScale);
             }
 
             // If no bone was matched at all, signal "not ready" by resetting count to 0.
@@ -1786,6 +1881,7 @@ r.count = static_cast<uint16_t>(collN);
     {
         if (g_sidecarLoaded) return;
         g_sidecarLoaded = true;
+        physics_live::LoadTable();
 
         LoadSidecarFile("WXLItemDisplayModels.csv");
         LoadSidecarFile("DBFilesClient\\WXLItemDisplayModels.csv");
@@ -1873,6 +1969,20 @@ r.count = static_cast<uint16_t>(collN);
         api->UiText(line);
 
         api->UiSeparator();
+        {
+            const physics_live::Stats ps = physics_live::GetStats();
+            int on = physics_live::Enabled() ? 1 : 0;
+            if (api->UiCheckbox("Live physics (experimental: plumes, ribbons, chains)", &on))
+                physics_live::SetEnabled(on != 0);
+            std::snprintf(line, sizeof(line), "  Physics table: %u pieces; simulating %u now",
+                          ps.tableRows, ps.live);
+            api->UiText(line);
+            std::snprintf(line, sizeof(line), "  Cost: %.3f ms last, %.3f ms worst; faults %u",
+                          ps.lastFrameMs, ps.worstFrameMs, ps.faults);
+            api->UiText(line);
+        }
+
+        api->UiSeparator();
         int log = EquipLogEnabled() ? 1 : 0;
         if (api->UiCheckbox("Write WarcraftXL_equip.log", &log))
             g_logOverride = log;
@@ -1889,6 +1999,8 @@ r.count = static_cast<uint16_t>(collN);
             api->UiText("Edit a CSV, reload, then re-equip the item to see the change.");
         }
     }
+
+    void PhysicsLogLine(const char* text) { EquipLog("%s", text); }
 
     void InstallPanel(const WXL_Api* api)
     {
@@ -4041,6 +4153,7 @@ r.count = static_cast<uint16_t>(collN);
             ev::BuildBonePaletteArgs a{ renderCtx };
             g_equipInstance->OnBuildBonePalette(a);
         }
+        physics_live::AfterBonePalette(renderCtx);
     }
 
     namespace
@@ -4122,7 +4235,9 @@ wxl::scripts::equipextension::InstallM2RenderHooks(api);
         static wxl::scripts::creatureextension::CreatureExtension g_creature;
         static wxl::scripts::weaponextension::WeaponExtension     g_weapon;
 
-        wxl::scripts::equipextension::InstallPanel(api);
+        wxl::scripts::equipextension::physics_live::SetLogger(&wxl::scripts::equipextension::PhysicsLogLine);
+        wxl::scripts::equipextension::physics_live::Init();
+                wxl::scripts::equipextension::InstallPanel(api);
 
         api->Log(WXL_LOG_INFO, "equip-plus", "loaded (equip + creature + weapon)");
         return 1;

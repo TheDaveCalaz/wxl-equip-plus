@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.0
+
+- **Live physics (experimental, off by default).** Plumes, ribbons, tassels and chains on retail pieces
+  swing as you move, driven by retail's own physics engine as ported by Kirazul
+  ([wow-retail-backport](https://github.com/Kirazul/wow-retail-backport), `src/physics/`). The converter
+  now ships each piece's physics data in the Equip Plus patch (`WXLEquipPlusPhysics.phy2`). Turn it on in
+  `Extensions\wxl-equip-plus\WXLExtendedEquipment.ini` with `[Physics]` `Enabled=1`, or in the F9 panel.
+  Tested on the Human, Blood Elf, Tauren and Troll heritage sets.
+- **Better fit for retail pieces on remodelled bodies (optional).** `[Fit]` `RetargetPivots=1` moves
+  each part of a retail-rigged piece to where the client body has the matching bone, and
+  `RetargetScale=1` sizes the piece to the client skeleton (measured per piece). Together they fix the
+  Tauren heritage chest, gloves and boots, and leave races whose skeleton already matches unchanged.
+- The physics table is written for pieces the kit shipped in patch-X too (helms, shoulders).
+
+
 ## 1.2.3
 
 - **Fixed: retail-rigged pieces floating behind the character in the character window** (reported with

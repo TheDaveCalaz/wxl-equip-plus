@@ -63,6 +63,7 @@ namespace wxl::scripts::equipextension::offsets
     using core_m2::kOffBoneKeyId;   // key_bone_id: canonical slot id (negative = none)
     using core_m2::kOffBoneParent;  // int16 parent index (0xFFFF = root)
     using core_m2::kOffBoneNameCrc; // CRC32 of the bone name string (name-based remap)
+    using core_m2::kOffBonePivot;   // float[3] bone origin in bind space
 
     // ---- per-frame / bone-palette hook points ----
     namespace m2hooks
