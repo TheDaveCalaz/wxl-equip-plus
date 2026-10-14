@@ -121,27 +121,27 @@ namespace wxl::scripts::equipextension::physics_live
             char     stem[260];
         };
 
-        bool ReadSnapshot(void* inst, Snapshot& s) noexcept
+        int ReadSnapshotStage(void* inst, Snapshot& s) noexcept
         {
             uint8_t* i = static_cast<uint8_t*>(inst);
             void* scene = nullptr;
             void* header = nullptr;
             void* boneArr = nullptr;
-            if (!SafeReadPtr(i + kOffInstShared, &s.shared) || !s.shared) return false;
-            if (!SafeReadPtr(i + kOffInstScene, &scene) || !scene) return false;
-            if (!SafeReadPtr(i + kOffInstPalette, reinterpret_cast<void**>(&s.palette)) || !s.palette) return false;
+            if (!SafeReadPtr(i + kOffInstShared, &s.shared) || !s.shared) return 1;
+            if (!SafeReadPtr(i + kOffInstScene, &scene) || !scene) return 2;
+            if (!SafeReadPtr(i + kOffInstPalette, reinterpret_cast<void**>(&s.palette)) || !s.palette) return 3;
             uint8_t* sh = static_cast<uint8_t*>(s.shared);
-            if (!SafeReadPtr(sh + kOffModelHeader, &header) || !header) return false;
+            if (!SafeReadPtr(sh + kOffModelHeader, &header) || !header) return 4;
             uint8_t* hd = static_cast<uint8_t*>(header);
-            if (!SafeCopy(&s.boneCount, hd + kOffHdrBones, 4)) return false;
-            if (s.boneCount < 2 || s.boneCount > kMaxBones) return false;   // one bone: nothing can swing
-            if (!SafeReadPtr(hd + kOffHdrBoneArr, &boneArr) || !boneArr) return false;
-            if (!SafeCopy(&s.clock, static_cast<uint8_t*>(scene) + kOffSceneClock, 4)) return false;
-            if (!SafeCopy(s.sceneMat, static_cast<uint8_t*>(scene) + kOffSceneMatrix, sizeof(s.sceneMat))) return false;
-            if (!SafeCopy(s.ownMat, i + kOffInstOwnMat, sizeof(s.ownMat))) return false;
-            if (!SafeCopy(s.stem, sh + kOffModelStem, sizeof(s.stem) - 1)) return false;
+            if (!SafeCopy(&s.boneCount, hd + kOffHdrBones, 4)) return 5;
+            if (s.boneCount < 2 || s.boneCount > kMaxBones) return 6;   // one bone: nothing can swing
+            if (!SafeReadPtr(hd + kOffHdrBoneArr, &boneArr) || !boneArr) return 7;
+            if (!SafeCopy(&s.clock, static_cast<uint8_t*>(scene) + kOffSceneClock, 4)) return 8;
+            if (!SafeCopy(s.sceneMat, static_cast<uint8_t*>(scene) + kOffSceneMatrix, sizeof(s.sceneMat))) return 9;
+            if (!SafeCopy(s.ownMat, i + kOffInstOwnMat, sizeof(s.ownMat))) return 10;
+            if (!SafeCopy(s.stem, sh + kOffModelStem, sizeof(s.stem) - 1)) return 11;
             s.stem[sizeof(s.stem) - 1] = 0;
-            return true;
+            return 0;
         }
 
         bool ReadBones(const Snapshot& s, void* boneArr, float* bones, int16_t* parents, phys::V3* pivots) noexcept
@@ -276,7 +276,16 @@ namespace wxl::scripts::equipextension::physics_live
         std::vector<float> before;
         std::vector<int16_t> parents;
         std::vector<phys::V3> pivots;
-        if (!ReadSnapshot(instance, s)) return;
+        static volatile long calls = 0;
+        if (InterlockedIncrement(&calls) == 1) Log("physics: first bone build seen (hook is live)");
+        const int stage = ReadSnapshotStage(instance, s);
+        if (stage)
+        {
+            static volatile long seen[16] = {};
+            if (stage < 16 && InterlockedIncrement(&seen[stage]) == 1)
+                Log("physics: an instance was skipped at read stage %d (first time only)", stage);
+            return;
+        }
 
         std::lock_guard<std::mutex> g(g_lock);
         const uint32_t now = GetTickCount();
@@ -290,8 +299,10 @@ namespace wxl::scripts::equipextension::physics_live
             model = FindRow(s.stem);
             g_models[s.shared] = model;
             g_modelStems[s.shared] = s.stem;
-            if (model) Log("physics: '%s' has %zu bodies, %zu joints", s.stem, model->bodies.size(),
-                           model->joints.size());
+            static int listed = 0;
+            if (model) Log("physics: MATCH '%s' (%u bones): %zu bodies, %zu joints", s.stem, s.boneCount,
+                           model->bodies.size(), model->joints.size());
+            else if (listed < 300) { ++listed; Log("physics: no row for '%s' (%u bones)", s.stem, s.boneCount); }
         }
         else model = mi->second;
         if (!model) return;
@@ -303,7 +314,12 @@ namespace wxl::scripts::equipextension::physics_live
         pivots.resize(s.boneCount);
         if (!ReadBones(s, boneArr, before.data(), parents.data(), pivots.data())) { ++g_stats.faults; return; }
         for (const phys::BodyDef& b : model->bodies)
-            if (b.bone != 0xFFFF && b.bone >= s.boneCount) return;   // row does not fit this file
+            if (b.bone != 0xFFFF && b.bone >= s.boneCount)
+            {
+                static int warned = 0;
+                if (warned++ < 20) Log("physics: row for '%s' names bone %u but the file has %u", s.stem, b.bone, s.boneCount);
+                return;   // row does not fit this file
+            }
 
         InstState& st = g_inst[instance];
         if (st.shared != s.shared || !st.sim)
@@ -347,7 +363,7 @@ namespace wxl::scripts::equipextension::physics_live
         phys::World(s.ownMat, s.sceneMat, f.placement);
         f.dt = dt;
         st.sim->Step(f);
-        if (dt > 0) ++g_stats.steps;
+        if (dt > 0 && ++g_stats.steps == 1) Log("physics: first simulation step ran ('%s')", s.stem);
 
         // outputs: each dynamic body's bone, then everything under a moved bone
         std::vector<float> bones(before);
