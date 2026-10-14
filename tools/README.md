@@ -34,6 +34,11 @@ main project's scan and download cache, then stages models, textures, table rows
 python tools\rescue_left_out.py --work C:\Backport\MyProject --kit C:\Tools\wow-retail-backport\wow-retail-backport
 ```
 
+**Remove something** (option 9) lists the sets and single items in the project and takes out the ones you
+pick: out of the kit's selection and plan, out of the looks brought back, and - at the next Install - out
+of the database (`out\sql\item_template_removed.sql`). Then choose Build and Install. Nothing downloaded
+is deleted and the ids stay reserved, so adding something back later is quick and gets the same ids.
+
 ## `backport_to_equipplus.py` - retail sets from the backport kit, in 3D
 
 [wow-retail-backport](https://github.com/Kirazul/wow-retail-backport) converts a retail armour set for a

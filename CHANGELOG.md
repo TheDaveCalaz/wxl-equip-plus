@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Backport Helper: **Remove something** (option 9) takes sets or single items back out of a project -
+  the kit itself can only add. The next Build and Install drop them from the patches and the database.
+
 ## 1.3.0
 
 - **Live physics (experimental, off by default).** Plumes, ribbons, tassels and chains on retail pieces

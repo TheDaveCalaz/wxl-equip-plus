@@ -361,6 +361,123 @@ def add_something(s):
         say("!! Adding failed - see above.")
 
 
+REBUILD_AFTER_REMOVE = ["tables", "audit", "prove-gates", "pack", "sheet"]
+
+
+def rescued_left(work):
+    return bool(_json(os.path.join(work, "rescued.json"), {}))
+
+
+def remove_something(s):
+    """Drop sets or single items from the project: out of the kit's selection and plan, out of the looks
+    brought back, and out of the database at the next Install. Nothing downloaded is deleted, ids stay
+    reserved, and anything removed can be added again later."""
+    title("Remove something from your project")
+    work = s["work"]
+    sel_path = os.path.join(work, "selection.json")
+    sel = _json(sel_path, None)
+    if not sel or not sel.get("displays"):
+        say("Nothing has been added yet.")
+        return
+    sets = sel.get("sets") or {}
+    displays = sel["displays"]
+    entries = []   # (label, set id or None, [display ids])
+    for sid, st in sorted(sets.items(), key=lambda kv: (kv[1].get("name", ""), int(kv[0]))):
+        ds = sorted({str(d) for v in (st.get("slots") or {}).values() for d in v})
+        entries.append((f"SET   {st.get('name', '?')}  (set {sid}, {len(ds)} piece(s))", sid, ds))
+    in_sets = {str(d) for st in sets.values() for v in (st.get("slots") or {}).values() for d in v}
+    for d, e in sorted(displays.items(), key=lambda kv: int(kv[0])):
+        if d in in_sets:
+            continue
+        name = next((i.get("name") for i in e.get("items", []) if i.get("name")), "") or f"look {d}"
+        entries.append((f"ITEM  {name}  ({e.get('slot', '?')}, look {d})", None, [d]))
+    say("Everything in this project:")
+    say()
+    for i, (label, _, _) in enumerate(entries, 1):
+        say(f"  {i:3}. {label}")
+    say()
+    picks = ask("Numbers to remove, separated by commas, or Enter to cancel", "")
+    if not picks:
+        return
+    chosen = [entries[int(x) - 1] for x in re.split(r"[,\s]+", picks)
+              if x.isdigit() and 1 <= int(x) <= len(entries)]
+    if not chosen:
+        say("No valid numbers - nothing removed.")
+        return
+    drop_sets = {sid for _, sid, _ in chosen if sid}
+    # a look goes only when nothing that stays still uses it
+    keep_sets = {sid: st for sid, st in sets.items() if sid not in drop_sets}
+    still_used = {str(d) for st in keep_sets.values() for v in (st.get("slots") or {}).values() for d in v}
+    drop = {d for _, _, ds in chosen for d in ds if d not in still_used}
+    say()
+    for label, _, _ in chosen:
+        say("   remove " + label)
+    say(f"   ({len(drop)} look(s) in all)")
+    say("Characters already holding these items will see them vanish from the game once you Install.")
+    if not yes("Remove them?"):
+        return
+
+    # the kit's selection and plan
+    for sid in drop_sets:
+        sets.pop(sid, None)
+    for d in drop:
+        displays.pop(d, None)
+    for st in sets.values():
+        st["slots"] = {k: [x for x in v if str(x) not in drop] for k, v in (st.get("slots") or {}).items()}
+    _save_json(sel_path, sel)
+    plan_path = os.path.join(work, "build", "plan.json")
+    plan = _json(plan_path, None)
+    if plan:
+        for d in drop:
+            plan.pop(d, None)
+        _save_json(plan_path, plan)
+
+    # looks left out or brought back
+    ex = excluded(s)
+    if any(d in ex for d in drop):
+        _save_json(os.path.join(work, "helper-excluded.json"), {k: v for k, v in ex.items() if k not in drop})
+    rescued_path = os.path.join(work, "rescued.json")
+    rescued = _json(rescued_path, {})
+    gone_rescued = {d: rescued[d] for d in drop if d in rescued}
+    if gone_rescued:
+        left = {k: v for k, v in rescued.items() if k not in gone_rescued}
+        _save_json(rescued_path, left)
+        if not left:   # nothing brought back any more: drop what option 8 staged for the patch
+            shutil.rmtree(os.path.join(work, "out", "equip-plus-rescue"), ignore_errors=True)
+
+    # the database: delete the removed items at the next Install (ids stay reserved in ids.json)
+    item_ids = (_json(os.path.join(work, "ids.json"), {}).get("item") or {})
+    gone_items = {int(item_ids[d]) for d in drop if d in item_ids} | \
+        {int(i) for v in gone_rescued.values() for i in v.get("items", [])}
+    if gone_items:
+        rm_path = os.path.join(work, "out", "sql", "item_template_removed.sql")
+        os.makedirs(os.path.dirname(rm_path), exist_ok=True)
+        old = set()
+        if os.path.isfile(rm_path):
+            with open(rm_path, encoding="utf-8") as f:
+                body = f.read()
+            if "IN (" in body:
+                old = {int(x) for x in re.findall(r"\d+", body.split("IN (", 1)[1])}
+        ids = sorted(old | gone_items)
+        with open(rm_path, "w", encoding="utf-8") as f:
+            f.write("-- items removed with the Backport Helper; run before the kit's item_template.sql\n")
+            f.write("DELETE FROM `item_template` WHERE `entry` IN (%s);\n" % ",".join(map(str, ids)))
+
+    # what has to run again
+    steps_path = os.path.join(work, "reports", "steps.json")
+    led = _json(steps_path, {})
+    for step in REBUILD_AFTER_REMOVE:
+        if step in led:
+            led[step]["ok"] = False
+    if led:
+        _save_json(steps_path, led)
+    say()
+    say(f"Removed {len(chosen)} entr{'y' if len(chosen) == 1 else 'ies'} ({len(drop)} look(s)).")
+    if gone_rescued and rescued_left(work):
+        say("Some of them were looks brought back with option 8: choose 8 again so the rest are re-made.")
+    say("Next: choose 'Build', then 'Install'. Nothing downloaded was deleted, so adding them back is quick.")
+
+
 # --------------------------------------------------------------------------------------------------
 # looks left out
 #
@@ -639,7 +756,8 @@ def install(s):
 
 
 def run_sql(s):
-    files = [p for p in (os.path.join(s["work"], "out", "sql", "item_template.sql"),
+    files = [p for p in (os.path.join(s["work"], "out", "sql", "item_template_removed.sql"),
+                         os.path.join(s["work"], "out", "sql", "item_template.sql"),
                          os.path.join(s["work"], "out", "equip-plus-rescue", "sql", "item_template.sql"))
              if os.path.isfile(p)]
     if not files:
@@ -664,7 +782,8 @@ def run_sql(s):
             r = subprocess.run([mysql, "-h", s.get("db_host", "127.0.0.1"), "-P", str(s.get("db_port", "3306")),
                                 "-u", s.get("db_user", "acore"), s.get("db_world", "acore_world")],
                                stdin=f, env=env, capture_output=True, text=True)
-        what = "item SQL" if "equip-plus-rescue" not in sql else "brought-back items' SQL"
+        what = ("brought-back items' SQL" if "equip-plus-rescue" in sql else
+                "removed items' SQL" if sql.endswith("item_template_removed.sql") else "item SQL")
         if r.returncode == 0:
             say(f"   {what} applied")
         else:
@@ -853,6 +972,7 @@ def main():
         say("  6. Settings")
         say("  7. Quit")
         say("  8. Bring back left-out looks  (3D pieces only Equip Plus can draw)")
+        say("  9. Remove something           (take sets or items out of your project)")
         c = ask("Choose a number", "")
         try:
             if c == "1":
@@ -871,6 +991,8 @@ def main():
                 return 0
             elif c == "8":
                 bring_back(s)
+            elif c == "9":
+                remove_something(s)
             else:
                 continue
         except KeyboardInterrupt:
