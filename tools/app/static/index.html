@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backport App</title>
+<link rel="stylesheet" href="app.css">
+<script>const whTooltips = {colorLinks: false, iconizeLinks: true, renameLinks: false, iconSize: "small"};</script>
+<script src="https://wow.zamimg.com/js/tooltips.js" async></script>
+</head>
+<body>
+<div class="shell">
+  <nav class="side">
+    <div class="brand">
+      <div class="mark">BP</div>
+      <div><div class="brand-name">Backport</div><div class="brand-sub">for Equip Plus · test phase</div></div>
+    </div>
+    <button class="nav on" data-view="find">Find</button>
+    <button class="nav" data-view="project">Project <span class="count" id="nav-count"></span></button>
+    <button class="nav" data-view="build">Build &amp; Install</button>
+    <button class="nav" data-view="tools">Tools</button>
+    <button class="nav" data-view="settings">Settings <span class="dot hidden" id="nav-warn"></span></button>
+    <div class="side-foot" id="side-status"></div>
+  </nav>
+
+  <main class="main">
+    <!-- FIND -->
+    <section class="view" id="view-find">
+      <header class="vh">
+        <h1>Find retail sets and items</h1>
+        <p>Search by name, tick what you want, then add it to your project. "Preview" opens the 3D viewer on Wowhead.</p>
+      </header>
+      <div id="scan-banner" class="banner hidden">
+        <div><strong>The app needs to read your client first.</strong> This happens once (and again after big client changes).</div>
+        <button class="btn primary" data-run="scan">Read my client</button>
+      </div>
+      <form id="search-form" class="search">
+        <input id="search-text" type="search" placeholder="e.g. Lion's Heritage, Tier 2, Netherwing" autocomplete="off">
+        <button class="btn primary" type="submit">Search</button>
+      </form>
+      <div id="search-note" class="note"></div>
+      <div id="results"></div>
+      <div id="basket" class="basket hidden">
+        <div class="basket-text"><strong id="basket-count">0</strong> selected</div>
+        <label class="check" id="family-wrap"><input type="checkbox" id="family"> Also add the other colours retail links to these sets</label>
+        <button class="btn ghost" id="basket-clear" type="button">Clear</button>
+        <button class="btn primary" id="basket-add" type="button">Add to project</button>
+      </div>
+    </section>
+
+    <!-- PROJECT -->
+    <section class="view hidden" id="view-project">
+      <header class="vh">
+        <h1>Your project</h1>
+        <p>Everything you have added. Tick entries to take them out; the next Build and Install drop them from your game and database.</p>
+      </header>
+      <div class="toolbar">
+        <input id="project-filter" type="search" placeholder="Filter" autocomplete="off">
+        <span class="grow"></span>
+        <button class="btn" id="bring-back" data-run="bring_back">Bring back left-out looks</button>
+        <button class="btn danger" id="remove-selected" disabled>Remove selected</button>
+      </div>
+      <div id="project-list"></div>
+    </section>
+
+    <!-- BUILD -->
+    <section class="view hidden" id="view-build">
+      <header class="vh">
+        <h1>Build &amp; Install</h1>
+        <p>Build converts everything in your project. Install backs up what it replaces, then puts it in your game and server.</p>
+      </header>
+      <div class="cards">
+        <div class="card big">
+          <h2>Steps</h2>
+          <ol class="steps" id="steps"></ol>
+          <div class="row">
+            <button class="btn primary" data-run="build">Build</button>
+            <button class="btn" data-open="sheets">Preview pictures</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Your game</h2>
+          <dl class="facts" id="facts"></dl>
+          <div class="row">
+            <button class="btn primary" data-run="install">Install</button>
+            <button class="btn" data-run="undo" id="undo-btn">Undo last install</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Preview pictures</h2>
+        <p class="muted">Drawn by the kit at the end of a build. Look for helms floating above or sunk into heads, and white, black or bright green patches.</p>
+        <div class="gallery" id="gallery"></div>
+      </div>
+    </section>
+
+    <!-- TOOLS -->
+    <section class="view hidden" id="view-tools">
+      <header class="vh"><h1>Tools</h1><p>Housekeeping. Each one explains itself and asks before changing anything.</p></header>
+      <div class="cards three">
+        <div class="card">
+          <h2>Clean up the database</h2>
+          <p class="muted">Items your server has but your game cannot show: invisible, no icon. Lists them, backs them up, then deletes them on your say-so.</p>
+          <button class="btn" data-run="clean_db">Check the database</button>
+        </div>
+        <div class="card">
+          <h2>Bring back left-out looks</h2>
+          <p class="muted">Purely 3D pieces a stock client cannot draw (a coffin on the back, a quiver) made into Equip Plus pieces.</p>
+          <button class="btn" data-run="bring_back">Bring them back</button>
+        </div>
+        <div class="card">
+          <h2>Update Equip Plus</h2>
+          <p class="muted">Downloads the latest released extension into your client. Close the game first.</p>
+          <button class="btn" data-run="update_equip_plus">Update</button>
+        </div>
+        <div class="card">
+          <h2>Folders</h2>
+          <div class="row wrap">
+            <button class="btn" data-open="project">Project</button>
+            <button class="btn" data-open="backups">Backups</button>
+            <button class="btn" data-open="sheets">Pictures</button>
+            <button class="btn" data-open="data">Client Data</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view hidden" id="view-settings">
+      <header class="vh"><h1>Settings</h1><p>Where things are. Your database password is never saved; you are asked for it each time.</p></header>
+      <form class="card form" id="settings-form">
+        <h2>Your setup</h2>
+        <label>Backport kit folder<input name="kit" placeholder="C:\Tools\wow-retail-backport"><small data-for="kit"></small></label>
+        <div class="row"><button class="btn" type="button" data-run="download_kit">Download the kit into this folder</button></div>
+        <label>Client Data folder (holds common.MPQ)<input name="client_data" placeholder="D:\WrathClient\Data"><small data-for="client_data"></small></label>
+        <label>Project folder (use one for everything)<input name="work" placeholder="C:\Backport\MyProject"><small data-for="work"></small></label>
+        <div class="row hidden" id="init-row"><span class="muted">This project folder is new.</span><button class="btn primary" type="button" data-run="init">Create the project</button></div>
+        <label class="check"><input type="checkbox" name="armor_pieces"> 3D armour pieces (boots, gloves, legs, robe skirts - HD bodies only)</label>
+        <h2>Server (optional)</h2>
+        <label>Server dbc folder (holds Item.dbc)<input name="server_dbc" placeholder="leave empty if the server is elsewhere"><small data-for="server_dbc"></small></label>
+        <div class="grid2">
+          <label>mysql.exe<input name="mysql" placeholder="mysql"></label>
+          <label>World database<input name="db_world" placeholder="acore_world"></label>
+          <label>Host<input name="db_host" placeholder="127.0.0.1"></label>
+          <label>Port<input name="db_port" placeholder="3306"></label>
+          <label>User<input name="db_user" placeholder="acore"></label>
+        </div>
+        <div class="row"><button class="btn primary" type="submit">Save</button><span class="muted" id="settings-saved"></span></div>
+      </form>
+    </section>
+  </main>
+
+  <!-- JOB PANEL -->
+  <aside class="job hidden" id="job">
+    <header>
+      <div><div class="job-name" id="job-name"></div><div class="job-state" id="job-state"></div></div>
+      <button class="icon" id="job-close" title="Hide">×</button>
+    </header>
+    <div class="log" id="log"></div>
+    <div class="prompt hidden" id="prompt"></div>
+  </aside>
+</div>
+<div class="toast hidden" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

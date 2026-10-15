@@ -304,33 +304,65 @@ FIND_SET = re.compile(r"^\s*set\s+(\d+)\s+exp\s+(\S+)\s+classmask\s+(\S+)\s+pare
 FIND_ITEM = re.compile(r"^\s*item\s+(\d+)\s+exp\s+(\S+)\s+q(\S+)\s+inv\s+(\S+)\s+(.*)$")
 
 
+def search_retail(s, text):
+    """The kit's search, as a list of {kind, id, name, label, ...}. Raises RuntimeError on failure."""
+    code, out = run_kit(s, "find", "--work", s["work"], text, "--limit", "60", show=False)
+    if code != 0:
+        raise RuntimeError(out.strip() or "the search failed")
+    found = []
+    for line in out.splitlines():
+        m = FIND_SET.match(line)
+        if m:
+            found.append({"kind": "set", "id": m.group(1), "name": m.group(5).strip(), "exp": m.group(2),
+                          "classmask": m.group(3), "parent": m.group(4),
+                          "label": f"SET   {m.group(5)}  (set {m.group(1)}, expansion {m.group(2)}"
+                                   f"{', part of family ' + m.group(4) if m.group(4) != '0' else ''})"})
+            continue
+        m = FIND_ITEM.match(line)
+        if m:
+            found.append({"kind": "item", "id": m.group(1), "name": m.group(5).strip(), "exp": m.group(2),
+                          "quality": m.group(3), "inv": m.group(4),
+                          "label": f"ITEM  {m.group(5)}  (item {m.group(1)}, quality {m.group(3)})"})
+    return found
+
+
+def add_to_project(s, chosen, family=False):
+    """Add [{kind, id}] to the kit's selection. True when the kit took them."""
+    args = ["select", "--work", s["work"], "--add"]
+    for c in chosen:
+        args += [f"--{c['kind']}", str(c["id"])]
+    if family and any(c["kind"] == "set" for c in chosen):
+        args.append("--family")
+    say()
+    say("-> Adding to your project ...")
+    code, out = run_kit(s, *args)
+    if code == 0 and passed(s, "select"):
+        n = apply_exclusions(s)
+        if n:
+            say(f"   ({n} look(s) you left out earlier stay left out)")
+        return True
+    say("!! Adding failed - see above.")
+    return False
+
+
 def add_something(s):
     title("Add something to your project")
     if not passed(s, "scan") and not ensure_scan(s):
         return
     text = ask("Search retail for (part of a set or item name, e.g. Lion's Heritage)")
     say("Searching ... (the first search downloads retail's tables, which can take a minute)")
-    code, out = run_kit(s, "find", "--work", s["work"], text, "--limit", "60", show=False)
-    if code != 0:
-        say(out)
+    try:
+        found = search_retail(s, text)
+    except RuntimeError as ex:
+        say(str(ex))
         say("!! The search failed - see above.")
         return
-    found = []
-    for line in out.splitlines():
-        m = FIND_SET.match(line)
-        if m:
-            found.append(("set", m.group(1), f"SET   {m.group(5)}  (set {m.group(1)}, expansion {m.group(2)}"
-                                             f"{', part of family ' + m.group(4) if m.group(4) != '0' else ''})"))
-            continue
-        m = FIND_ITEM.match(line)
-        if m:
-            found.append(("item", m.group(1), f"ITEM  {m.group(5)}  (item {m.group(1)}, quality {m.group(3)})"))
     if not found:
         say("Nothing matched. Try fewer words, or the set's name as Wowhead spells it.")
         return
     say()
-    for i, (_, _, label) in enumerate(found, 1):
-        say(f"  {i:3}. {label}")
+    for i, f in enumerate(found, 1):
+        say(f"  {i:3}. {f['label']}")
     say()
     say("Sets usually come as one entry per colour. Pick every one you want.")
     picks = ask("Numbers to add, separated by commas (e.g. 1,2,3), or Enter to cancel", "")
@@ -343,23 +375,11 @@ def add_something(s):
     if not chosen:
         say("No valid numbers - nothing added.")
         return
-    args = ["select", "--work", s["work"], "--add"]
-    for kind, ident, _ in chosen:
-        args += [f"--{kind}", ident]
-    if any(k == "set" for k, _, _ in chosen) and \
-            yes("Also add every other colour of these sets that retail links to them?", False):
-        args.append("--family")
-    say()
-    say("-> Adding to your project ...")
-    code, out = run_kit(s, *args)
-    if code == 0 and passed(s, "select"):
-        n = apply_exclusions(s)
-        if n:
-            say(f"   ({n} look(s) you left out earlier stay left out)")
+    family = any(c["kind"] == "set" for c in chosen) and \
+        yes("Also add every other colour of these sets that retail links to them?", False)
+    if add_to_project(s, chosen, family):
         say()
         say("Added. Choose 'Build' from the menu when you have added everything you want.")
-    else:
-        say("!! Adding failed - see above.")
 
 
 REBUILD_AFTER_REMOVE = ["tables", "audit", "prove-gates", "pack", "sheet"]
@@ -381,20 +401,14 @@ def remove_something(s):
         clean_database(s)
 
 
-def remove_from_project(s):
-    """Drop sets or single items from the project: out of the kit's selection and plan, out of the looks
-    brought back, and out of the database at the next Install. Nothing downloaded is deleted, ids stay
-    reserved, and anything removed can be added again later."""
-    title("Remove something from your project")
-    work = s["work"]
-    sel_path = os.path.join(work, "selection.json")
-    sel = _json(sel_path, None)
+def project_entries(s):
+    """Everything in the project: [(label, set id or None, [display ids])], sets first."""
+    sel = _json(os.path.join(s["work"], "selection.json"), None)
     if not sel or not sel.get("displays"):
-        say("Nothing has been added yet.")
-        return
+        return []
     sets = sel.get("sets") or {}
     displays = sel["displays"]
-    entries = []   # (label, set id or None, [display ids])
+    entries = []
     for sid, st in sorted(sets.items(), key=lambda kv: (kv[1].get("name", ""), int(kv[0]))):
         ds = sorted({str(d) for v in (st.get("slots") or {}).values() for d in v})
         entries.append((f"SET   {st.get('name', '?')}  (set {sid}, {len(ds)} piece(s))", sid, ds))
@@ -404,6 +418,18 @@ def remove_from_project(s):
             continue
         name = next((i.get("name") for i in e.get("items", []) if i.get("name")), "") or f"look {d}"
         entries.append((f"ITEM  {name}  ({e.get('slot', '?')}, look {d})", None, [d]))
+    return entries
+
+
+def remove_from_project(s):
+    """Drop sets or single items from the project: out of the kit's selection and plan, out of the looks
+    brought back, and out of the database at the next Install. Nothing downloaded is deleted, ids stay
+    reserved, and anything removed can be added again later."""
+    title("Remove something from your project")
+    entries = project_entries(s)
+    if not entries:
+        say("Nothing has been added yet.")
+        return
     say("Everything in this project:")
     say()
     for i, (label, _, _) in enumerate(entries, 1):
@@ -417,6 +443,18 @@ def remove_from_project(s):
     if not chosen:
         say("No valid numbers - nothing removed.")
         return
+    remove_entries(s, chosen)
+
+
+def remove_entries(s, chosen, confirm=True):
+    """Take project_entries() rows out of the project (see remove_from_project)."""
+    work = s["work"]
+    sel_path = os.path.join(work, "selection.json")
+    sel = _json(sel_path, None)
+    if not sel or not sel.get("displays"):
+        return False
+    sets = sel.get("sets") or {}
+    displays = sel["displays"]
     drop_sets = {sid for _, sid, _ in chosen if sid}
     # a look goes only when nothing that stays still uses it
     keep_sets = {sid: st for sid, st in sets.items() if sid not in drop_sets}
@@ -427,8 +465,8 @@ def remove_from_project(s):
         say("   remove " + label)
     say(f"   ({len(drop)} look(s) in all)")
     say("Characters already holding these items will see them vanish from the game once you Install.")
-    if not yes("Remove them?"):
-        return
+    if confirm and not yes("Remove them?"):
+        return False
 
     # the kit's selection and plan
     for sid in drop_sets:
@@ -489,6 +527,7 @@ def remove_from_project(s):
     if gone_rescued and rescued_left(work):
         say("Some of them were looks brought back with option 8: choose 8 again so the rest are re-made.")
     say("Next: choose 'Build', then 'Install'. Nothing downloaded was deleted, so adding them back is quick.")
+    return True
 
 
 # --------------------------------------------------------------------------------------------------
