@@ -382,7 +382,9 @@ def add_something(s):
         say("Added. Choose 'Build' from the menu when you have added everything you want.")
 
 
-REBUILD_AFTER_REMOVE = ["tables", "audit", "prove-gates", "pack", "sheet"]
+# "build" too: its --extension export (out/extension/extension.json) still lists the removed looks until it
+# runs again, and pack would then fail looking for their files.
+REBUILD_AFTER_REMOVE = ["build", "tables", "audit", "prove-gates", "pack", "sheet"]
 
 
 def rescued_left(work):
