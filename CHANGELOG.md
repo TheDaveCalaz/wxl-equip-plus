@@ -4,6 +4,9 @@
 
 - Backport Helper: **Remove something** (option 9) takes sets or single items back out of a project -
   the kit itself can only add. The next Build and Install drop them from the patches and the database.
+- Backport Helper: option 9's **Clean up the database** finds items your server has but your game cannot
+  show (invisible, no icon) - left behind by failed builds, SQL run by hand or sets removed by hand - and
+  deletes them after a backup.
 
 ## 1.3.0
 

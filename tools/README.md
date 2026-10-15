@@ -39,6 +39,15 @@ pick: out of the kit's selection and plan, out of the looks brought back, and - 
 of the database (`out\sql\item_template_removed.sql`). Then choose Build and Install. Nothing downloaded
 is deleted and the ids stay reserved, so adding something back later is quick and gets the same ids.
 
+Option 9's **Clean up the database** is for items that show in game with a name but no model and no icon:
+rows that reached the database while their look never reached the game (a build that failed its audit,
+SQL run by hand, a set taken out before option 9 existed, another project). It reads every Item and
+ItemDisplayInfo table the game loads (patches, locale patches, folder patches and Equip Plus's add-on
+tables), asks the database for its backport items (the kit's range from 900000, Equip Plus's from 990000,
+and every id the project handed out), and lists the ones the game cannot show. Nothing is deleted until
+you say yes; the rows are saved with mysqldump to `<project>\backups\<date>\item_template_cleaned.sql`
+first, and the password is asked for and never stored.
+
 ## `backport_to_equipplus.py` - retail sets from the backport kit, in 3D
 
 [wow-retail-backport](https://github.com/Kirazul/wow-retail-backport) converts a retail armour set for a

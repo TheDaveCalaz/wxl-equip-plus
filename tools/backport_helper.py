@@ -33,6 +33,7 @@ sys.path.insert(0, HERE)
 import backport_to_equipplus as converter  # noqa: E402
 import merge_server_dbc as merger  # noqa: E402
 import rescue_left_out as rescuer  # noqa: E402
+from mpqread import MpqReader  # noqa: E402
 
 SETTINGS_DIR = os.path.join(os.path.expanduser("~"), ".wxl-equip-plus")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "helper.json")
@@ -369,6 +370,18 @@ def rescued_left(work):
 
 
 def remove_something(s):
+    title("Remove something")
+    say("  1. Take sets or items out of your project")
+    say("  2. Clean up the database   (items your server has but your game does not - they show up")
+    say("                              invisible, with no icon)")
+    c = ask("Choose a number, or Enter to go back", "")
+    if c == "1":
+        remove_from_project(s)
+    elif c == "2":
+        clean_database(s)
+
+
+def remove_from_project(s):
     """Drop sets or single items from the project: out of the kit's selection and plan, out of the looks
     brought back, and out of the database at the next Install. Nothing downloaded is deleted, ids stay
     reserved, and anything removed can be added again later."""
@@ -476,6 +489,166 @@ def remove_something(s):
     if gone_rescued and rescued_left(work):
         say("Some of them were looks brought back with option 8: choose 8 again so the rest are re-made.")
     say("Next: choose 'Build', then 'Install'. Nothing downloaded was deleted, so adding them back is quick.")
+
+
+# --------------------------------------------------------------------------------------------------
+# clean up the database
+#
+# A backport item the server has but the game's Item.dbc does not shows in game with its name and nothing
+# else: no model, no icon. That happens when a set's rows reached the database but its patch never reached
+# the game (a build that failed, SQL run by hand, a set taken out before option 9 existed, a different
+# project). This finds them by comparing the database with every Item table the game actually loads, and
+# deletes only those, after a backup.
+
+ITEM_TABLES = {"DBFilesClient\\Item.dbc": "items", "DBFilesClient\\Item.dbc1-equipplus": "items",
+               "DBFilesClient\\ItemDisplayInfo.dbc": "looks",
+               "DBFilesClient\\ItemDisplayInfo.dbc1-equipplus": "looks"}
+
+
+def _dbc_ids(data):
+    """First column of every row of a WDBC table."""
+    import struct
+    if len(data) < 20 or data[:4] != b"WDBC":
+        return set()
+    n, _, size, _ = struct.unpack_from("<4I", data, 4)
+    return {struct.unpack_from("<I", data, 20 + i * size)[0] for i in range(n) if 20 + i * size + 4 <= len(data)}
+
+
+def game_item_ids(data_dir):
+    """Every item id and look (display) id in any Item / ItemDisplayInfo table the client can load
+    (patches, locale patches, folder patches). Returns ({"items", "looks"}, Item tables read, archives
+    that could not be read)."""
+    ids, tables, unread = {"items": set(), "looks": set()}, 0, []
+    roots = [data_dir] + [os.path.join(data_dir, d) for d in os.listdir(data_dir)
+                          if os.path.isdir(os.path.join(data_dir, d)) and not d.lower().endswith(".mpq")]
+    for root in roots:
+        for name in sorted(os.listdir(root)):
+            if not name.lower().endswith(".mpq"):
+                continue
+            path = os.path.join(root, name)
+            try:
+                if os.path.isdir(path):
+                    for rel, kind in ITEM_TABLES.items():
+                        f = os.path.join(path, *rel.split("\\"))
+                        if os.path.isfile(f):
+                            with open(f, "rb") as fh:
+                                ids[kind] |= _dbc_ids(fh.read())
+                            tables += kind == "items"
+                else:
+                    m = MpqReader(path)
+                    try:
+                        for rel, kind in ITEM_TABLES.items():
+                            if m.has(rel):
+                                ids[kind] |= _dbc_ids(m.read(rel))
+                                tables += kind == "items"
+                    finally:
+                        m.close()
+            except Exception:   # an archive this reader cannot open; stock archives hold no backport items
+                unread.append(name)
+    return ids, tables, unread
+
+
+def _mysql_base(s, exe):
+    return [exe, "-h", s.get("db_host", "127.0.0.1"), "-P", str(s.get("db_port", "3306")),
+            "-u", s.get("db_user", "acore")]
+
+
+def clean_database(s):
+    title("Clean up the database")
+    work = s["work"]
+    if not s.get("db_user"):
+        say("No database is set up. Add your database details under Settings first.")
+        return
+    mysql = s.get("mysql") or "mysql"
+    mysql = mysql if os.path.isfile(mysql) else shutil.which(mysql)
+    if not mysql:
+        say(f"!! Cannot find mysql at '{s.get('mysql') or 'mysql'}'. Change it under Settings.")
+        return
+    dump = os.path.join(os.path.dirname(mysql), "mysqldump" + (".exe" if mysql.lower().endswith(".exe") else ""))
+    dump = dump if os.path.isfile(dump) else shutil.which("mysqldump")
+    if not dump:
+        say("!! Cannot find mysqldump next to mysql, so the rows could not be backed up first.")
+        say("   Nothing was changed.")
+        return
+
+    say("Reading the item tables your game loads ...")
+    game, tables, unread = game_item_ids(s["client_data"])
+    if not tables:
+        say("!! Could not find any Item table in your game's Data folder, so there is nothing safe to compare")
+        say("   against. Nothing was changed.")
+        return
+    say(f"   {tables} item table(s), {len(game['items'])} item(s), {len(game['looks'])} look(s)")
+    if unread:
+        say("   (skipped, could not open: " + ", ".join(unread) + ")")
+
+    # backport items: the kit's range and every id this project ever handed out, plus Equip Plus's own
+    start = int(_json(os.path.join(work, "bp.json"), {}).get("item_id_start") or 0) or 900000
+    known = set()
+    for v in (_json(os.path.join(work, "ids.json"), {}).get("item") or {}).values():
+        known |= {int(x) for x in (v if isinstance(v, list) else [v])}
+    for v in _json(os.path.join(work, "rescued.json"), {}).values():
+        known |= {int(x) for x in v.get("items", [])}
+    known.add(start)
+    where = f"entry >= {min(start, rescuer.ITEM_START)} OR entry IN ({','.join(map(str, sorted(known)))})"
+
+    say()
+    pw = getpass.getpass(f"Password for {s.get('db_user')} (not shown, not stored): ")
+    env = dict(os.environ, MYSQL_PWD=pw)
+    db = s.get("db_world", "acore_world")
+    r = subprocess.run(_mysql_base(s, mysql) + ["-N", "-B", db, "-e",
+                       f"SELECT entry, displayid, name FROM item_template WHERE {where} ORDER BY entry"],
+                       env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        say("!! Could not read the database:")
+        say("   " + (r.stderr or r.stdout).strip().replace("\n", "\n   "))
+        return
+    rows = []
+    for line in r.stdout.splitlines():
+        entry, display, name = (line.split("\t", 2) + ["", ""])[:3]
+        if not (entry.isdigit() and display.isdigit()):
+            continue
+        if int(entry) not in game["items"]:
+            rows.append((int(entry), name, "not in the game's item table"))
+        elif int(display) not in game["looks"]:
+            rows.append((int(entry), name, f"its look {display} is not in the game"))
+    if not rows:
+        say("Nothing to clean up: every backport item in your database is in your game.")
+        return
+
+    say()
+    say(f"{len(rows)} item(s) in your database that your game cannot show:")
+    for entry, name, why in rows[:60]:
+        say(f"   {entry}  {name}  ({why})")
+    if len(rows) > 60:
+        say(f"   ... and {len(rows) - 60} more")
+    say()
+    say("Characters holding these items will lose them. If any of them are sets you still want, choose")
+    say("'Build' and 'Install' instead - that puts the game's half back.")
+    if not yes(f"Back up and delete these {len(rows)} item(s) from {db}.item_template?"):
+        return
+
+    ids = ",".join(str(e) for e, _, _ in rows)
+    backup = os.path.join(work, "backups", now())
+    os.makedirs(backup, exist_ok=True)
+    bfile = os.path.join(backup, "item_template_cleaned.sql")
+    with open(bfile, "w", encoding="utf-8") as f:
+        r = subprocess.run([dump] + _mysql_base(s, mysql)[1:] + ["--no-create-info", "--skip-triggers",
+                           f"--where=entry IN ({ids})", db, "item_template"],
+                           env=env, stdout=f, stderr=subprocess.PIPE, text=True)
+    if r.returncode != 0 or os.path.getsize(bfile) == 0:
+        say("!! The backup failed, so nothing was deleted:")
+        say("   " + (r.stderr or "").strip().replace("\n", "\n   "))
+        return
+    r = subprocess.run(_mysql_base(s, mysql) + [db, "-e", f"DELETE FROM item_template WHERE entry IN ({ids})"],
+                       env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        say("!! The delete did not run (your backup is still at " + bfile + "):")
+        say("   " + (r.stderr or r.stdout).strip().replace("\n", "\n   "))
+        return
+    say()
+    say(f"Deleted {len(rows)} item(s). Backup: {bfile}")
+    say(f"To put them back: in the mysql prompt, USE {db}; then SOURCE {bfile.replace(chr(92), '/')};")
+    say("Restart the worldserver if it is running.")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -972,7 +1145,7 @@ def main():
         say("  6. Settings")
         say("  7. Quit")
         say("  8. Bring back left-out looks  (3D pieces only Equip Plus can draw)")
-        say("  9. Remove something           (take sets or items out of your project)")
+        say("  9. Remove something           (take sets or items out, or clean up the database)")
         c = ask("Choose a number", "")
         try:
             if c == "1":
